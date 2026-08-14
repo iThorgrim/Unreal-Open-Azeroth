@@ -1,6 +1,7 @@
 #pragma once
 #include <cstdint>
 #include <vector>
+#include "WorldCipher.h"
 
 namespace uoa::world {
 
@@ -15,16 +16,14 @@ public:
 
 private:
     void parse();
-    void decryptHeader(uint8_t* header, int len);
 
-    Direction   dir_;
-    const char* tag_;
-    int         headerLen_;
-    bool        cryptActive_   = false;
-    bool        inBody_        = false;
-    int         bodyRemaining_ = 0;
-    uint8_t     i_ = 0;
-    uint8_t     j_ = 0;
+    Direction    dir_;
+    const char*  tag_;
+    int          headerLen_;
+    bool         cryptActive_   = false;
+    bool         inBody_        = false;
+    int          bodyRemaining_ = 0;
+    HeaderCipher cipher_;
     std::vector<uint8_t> buf_;
 };
 
