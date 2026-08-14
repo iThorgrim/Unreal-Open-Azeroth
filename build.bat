@@ -5,7 +5,10 @@ set CFLAGS=/nologo /O2 /std:c++17 /EHsc /D_CRT_SECURE_NO_WARNINGS
 set MHINC=/I third_party\minhook\include
 set MHSRC=third_party\minhook\src\buffer.c third_party\minhook\src\hook.c third_party\minhook\src\trampoline.c third_party\minhook\src\hde\hde64.c
 
-cl %CFLAGS% /LD %MHINC% src\dll\*.cpp %MHSRC% /Fe:UnrealOpenAzeroth.dll /link ws2_32.lib
+ml64 /nologo /c /FoWorldKeyStub.obj src\dll\WorldKeyStub.asm
+if errorlevel 1 goto err
+
+cl %CFLAGS% /LD %MHINC% src\dll\*.cpp WorldKeyStub.obj %MHSRC% /Fe:UnrealOpenAzeroth.dll /link ws2_32.lib
 if errorlevel 1 goto err
 
 cl %CFLAGS% src\patcher\Patcher.cpp /Fe:patcher.exe

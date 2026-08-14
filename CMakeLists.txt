@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.15)
-project(UnrealOpenAzeroth CXX C)
+project(UnrealOpenAzeroth CXX C ASM_MASM)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -8,6 +8,7 @@ file(GLOB DLL_SOURCES CONFIGURE_DEPENDS src/dll/*.cpp)
 
 add_library(UnrealOpenAzeroth SHARED
     ${DLL_SOURCES}
+    src/dll/WorldKeyStub.asm
     third_party/minhook/src/buffer.c
     third_party/minhook/src/hook.c
     third_party/minhook/src/trampoline.c

@@ -3,6 +3,7 @@
 #include "Log.h"
 #include "Settings.h"
 #include "ConnectHook.h"
+#include "WorldKey.h"
 #include "AuthProxy.h"
 #include "WorldProxy.h"
 #include "DiscordPresence.h"
@@ -57,6 +58,7 @@ DWORD WINAPI boot(LPVOID) {
 
     Sleep(200);   // let the listeners bind before hooking connect
     hook::install();
+    worldkey::install();
 
     loadDiscordConfig();
     discord::installAsync();
