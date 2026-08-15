@@ -70,7 +70,7 @@ Bytes toClientChallenge(const uint8_t* data, int len) {
 
     ByteWriter pkt;
     pkt.u8(0xa1); pkt.u8(0x00);
-    pkt.u16(uint16_t(body.size()));
+    pkt.u16(0x0096);   // 150: satisfies both the 130 and 150 thresholds
     pkt.bytes(body.data());
     return pkt.take();
 }

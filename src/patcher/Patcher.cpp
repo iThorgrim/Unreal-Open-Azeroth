@@ -16,26 +16,55 @@
 static const char* kExeDefault = "Azeroth-Win64-Shipping.exe";
 static const char* kDllName    = "UnrealOpenAzeroth.dll";
 static const char* kAnchor     = "uoa_anchor";
-static const char* kPepperTail = "ZRT-PEPPER-v1";   // the leading 'A' is the byte we strip
+static const char* kPepperTail = "ZRT-PEPPER-v1";   // preceded by the 'A' of the full pepper literal
 
 static uint32_t alignUp(uint32_t value, uint32_t align) {
     return (value + align - 1) & ~(align - 1);
 }
 
-// Zeroes the first byte of the pepper string so its runtime length becomes 0.
-static bool stripPepper(std::vector<uint8_t>& buf) {
+static bool neutralizePepper(std::vector<uint8_t>& buf) {
+    auto dos = (IMAGE_DOS_HEADER*)buf.data();
+    auto nt  = (IMAGE_NT_HEADERS64*)(buf.data() + dos->e_lfanew);
+    if (nt->Signature != IMAGE_NT_SIGNATURE) { printf("[patch] not a PE\n"); return false; }
+    IMAGE_SECTION_HEADER* sections = IMAGE_FIRST_SECTION(nt);
+    int sectionCount = nt->FileHeader.NumberOfSections;
+    uint64_t imageBase = nt->OptionalHeader.ImageBase;
+
+    auto offToVa = [&](size_t off) -> uint64_t {
+        for (int i = 0; i < sectionCount; ++i) {
+            uint32_t p = sections[i].PointerToRawData;
+            if (off >= p && off < p + sections[i].SizeOfRawData)
+                return imageBase + sections[i].VirtualAddress + (uint32_t)(off - p);
+        }
+        return 0;
+    };
+
+    // The pepper literal is "A" + kPepperTail; the referenced address is the leading 'A'.
     size_t tailLen = strlen(kPepperTail);
-    for (size_t i = 1; i + tailLen <= buf.size(); ++i) {
-        if (memcmp(&buf[i], kPepperTail, tailLen) != 0) continue;
+    size_t pepOff = 0;
+    for (size_t i = 1; i + tailLen <= buf.size(); ++i)
+        if (memcmp(&buf[i], kPepperTail, tailLen) == 0) { pepOff = i - 1; break; }
+    if (!pepOff) { printf("[patch] pepper marker not found (exe changed?)\n"); return false; }
+    uint64_t pepVa = offToVa(pepOff);
 
-        uint8_t& first = buf[i - 1];   // the 'A' of "AZRT-PEPPER-v1"
-        if (first == 0x00) { printf("[patch] pepper already stripped\n"); return true; }
-        if (first == 'A')  { first = 0x00; printf("[patch] pepper stripped\n"); return true; }
+    // Find `lea r8, [rip -> pepper]` (4C 8D 05 disp32); the `mov r9d, imm32` (41 B9 imm) six bytes
+    // before it holds the pepper source length. Zero that immediate.
+    for (size_t l = 6; l + 7 <= buf.size(); ++l) {
+        if (buf[l] != 0x4C || buf[l + 1] != 0x8D || buf[l + 2] != 0x05) continue;
+        int32_t disp; memcpy(&disp, &buf[l + 3], 4);
+        uint64_t leaVa = offToVa(l);
+        if (!leaVa || leaVa + 7 + (int64_t)disp != pepVa) continue;
 
-        printf("[patch] pepper marker found but preceding byte is 0x%02x (unexpected)\n", first);
-        return false;
+        size_t m = l - 6;   // the preceding `mov r9d, imm32`
+        if (buf[m] != 0x41 || buf[m + 1] != 0xB9 || buf[m + 4] != 0x00 || buf[m + 5] != 0x00) continue;
+        if (buf[m + 2] == 0x00) { printf("[patch] pepper already neutralized\n"); return true; }
+        if (buf[m + 2] != 0x0F) continue;
+
+        buf[m + 2] = 0x00;   // pepper source length 15 -> 0
+        printf("[patch] pepper neutralized (r9d 15->0 at file 0x%zx)\n", m + 2);
+        return true;
     }
-    printf("[patch] pepper marker not found (exe changed?)\n");
+    printf("[patch] pepper builder site not found (concat changed?)\n");
     return false;
 }
 
@@ -149,7 +178,12 @@ static bool addImport(std::vector<uint8_t>& buf) {
 }
 
 int main(int argc, char** argv) {
-    const char* path = (argc > 1) ? argv[1] : kExeDefault;
+    const char* path = kExeDefault;
+    bool doPepper = true;
+    for (int i = 1; i < argc; ++i) {
+        if (strcmp(argv[i], "--no-pepper") == 0) doPepper = false;
+        else path = argv[i];
+    }
 
     FILE* f = fopen(path, "rb");
     if (!f) { printf("[patch] cannot open %s\n", path); return 1; }
@@ -169,7 +203,7 @@ int main(int argc, char** argv) {
         }
     }
 
-    bool ok = stripPepper(buf);
+    bool ok = doPepper ? neutralizePepper(buf) : (printf("[patch] pepper left intact (--no-pepper)\n"), true);
     ok = addImport(buf) && ok;
     if (!ok) { printf("[patch] aborted, exe not written\n"); return 1; }
 
