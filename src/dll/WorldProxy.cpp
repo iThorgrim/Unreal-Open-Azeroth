@@ -1,5 +1,6 @@
 #include "WorldProxy.h"
-#include "WorldStream.h"
+#include "WorldPipe.h"
+#include "OpcodeMap.h"
 #include "Net.h"
 #include "Settings.h"
 #include "Config.h"
@@ -12,22 +13,16 @@
 namespace uoa::world {
 namespace {
 
-struct Pipe { SOCKET from; SOCKET to; Stream* stream; };
+struct Pump { SOCKET from; Pipe* pipe; };
 
-// Forwards bytes one way unchanged, feeding a copy to the stream parser for opcode logging.
-void pump(SOCKET from, SOCKET to, Stream& stream) {
+DWORD WINAPI pumpThread(LPVOID param) {
+    Pump* p = (Pump*)param;
     uint8_t buf[8192];
     for (;;) {
-        int n = recv(from, (char*)buf, sizeof buf, 0);
+        int n = recv(p->from, (char*)buf, sizeof buf, 0);
         if (n <= 0) break;
-        stream.feed(buf, n);
-        net::sendAll(to, buf, n);
+        p->pipe->feed(buf, n);
     }
-}
-
-DWORD WINAPI serverToClient(LPVOID param) {
-    Pipe* pipe = (Pipe*)param;
-    pump(pipe->from, pipe->to, *pipe->stream);
     return 0;
 }
 
@@ -40,16 +35,22 @@ void handleSession(SOCKET client) {
         closesocket(client);
         return;
     }
-    log::line("[world] session (capture)");
+    log::line("[world] session (translate)");
 
-    Stream toServer(Stream::ClientToServer, "[world] C->S");
-    Stream toClient(Stream::ServerToClient, "[world] S->C");
+    // Two translating pipes sharing the captured key, each with its own crypt state.
+    Pipe toServer(mangosd, 6, mapClientOpcode, "[world] C->S");   // client -> mangos
+    Pipe toClient(client,  4, mapServerOpcode, "[world] S->C");   // mangos -> client
 
-    Pipe down{ mangosd, client, &toClient };
-    HANDLE thread = CreateThread(nullptr, 0, serverToClient, &down, 0, nullptr);
-    pump(client, mangosd, toServer);
+    Pump down{ mangosd, &toClient };
+    HANDLE thread = CreateThread(nullptr, 0, pumpThread, &down, 0, nullptr);
 
-    // Close both sockets to unblock the other pump, then wait for it to finish.
+    uint8_t buf[8192];
+    for (;;) {
+        int n = recv(client, (char*)buf, sizeof buf, 0);
+        if (n <= 0) break;
+        toServer.feed(buf, n);
+    }
+
     closesocket(client);
     closesocket(mangosd);
     if (thread) { WaitForSingleObject(thread, INFINITE); CloseHandle(thread); }
