@@ -40,6 +40,8 @@ inline constexpr int kCMSG_CHAR_ENUM      = 0x037;
 inline constexpr int kCMSG_CHAR_CREATE    = 0x036;
 inline constexpr int kCMSG_CHAR_DELETE     = 0x038;
 inline constexpr int kCMSG_PLAYER_LOGIN    = 0x03D;   // client->server: enter world with the selected char
+inline constexpr int kCMSG_NAME_QUERY      = 0x050;   // client->server: u64 guid (response is 0x051)
+inline constexpr int kCMSG_GAMEOBJECT_QUERY = 0x05E;  // client->server: u32 entry + u64 guid (response is 0x05F)
 inline constexpr int kCMSG_CREATURE_QUERY  = 0x060;   // client->server: u32 entry + u64 guid (response is 0x061)
 inline constexpr int kCMSG_SET_SELECTION   = 0x13D;   // client->server: u64 guid of the targeted unit
 inline constexpr int kCMSG_ZONEUPDATE      = 0x1F4;   // client->server: u32 zone id
@@ -82,6 +84,8 @@ inline constexpr int kQueryEntry3   = 0x143;   // C->S -> CMSG_CREATURE_QUERY (s
 inline constexpr int kSetActiveMover = 0x011;  // C->S -> CMSG_SET_ACTIVE_MOVER (u64 guid the client controls)
 inline constexpr int kSetSelection  = 0x159;   // C->S -> CMSG_SET_SELECTION (u64 guid)
 inline constexpr int kZoneUpdate    = 0x1AB;   // C->S -> CMSG_ZONEUPDATE (u32 zone id)
+inline constexpr int kQueryByGuid   = 0x4FB;   // C->S -> name/creature/GO query; body is the full 8-byte guid,
+                                               // which encodes the template entry (bits [47:24]) the query needs
 inline constexpr int kCharEnumResp  = 0x478;   // S->C <- SMSG_CHAR_ENUM
 inline constexpr int kCharCreateResp = 0x232;  // S->C <- SMSG_CHAR_CREATE
 inline constexpr int kCharDeleteResp = 0x233;  // S->C <- SMSG_CHAR_DELETE

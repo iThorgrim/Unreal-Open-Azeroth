@@ -35,6 +35,7 @@ private:
     void rewriteAuthSession(uint8_t* pkt, int total);            // recompute the CMSG_AUTH_SESSION digest with cmangos K
     void emitCharEnum();                                         // reshape the buffered char list and forward it
     void emitTrim();                                             // trim a buffered client packet to vanilla length
+    void emitGuidQuery();                                        // turn a query-by-guid into the matching vanilla query
     void injectWorldAccess();                                    // emit the world-access grant ahead of LOGIN_VERIFY_WORLD
 
     SOCKET       out_;
@@ -49,6 +50,7 @@ private:
     bool         forwardBody_   = true;
     bool         xformCharEnum_ = false;   // current body is SMSG_CHAR_ENUM, buffered whole for reshaping
     bool         xformTrim_     = false;   // current body is a padded client packet, buffered whole for trimming
+    bool         xformGuidQuery_ = false;  // current body is a query-by-guid, buffered whole to derive the entry
     int          bodyRemaining_ = 0;
     int          logOpcode_     = 0;       // original opcode of the packet whose body we are accumulating
     int          mappedOpcode_  = 0;       // renumbered opcode to stamp on a rebuilt body's header

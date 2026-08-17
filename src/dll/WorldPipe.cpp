@@ -200,10 +200,16 @@ void Pipe::parse() {
             xformCharEnum_ = (!fromClient_ && opcode == op::mangos::kSMSG_CHAR_ENUM && mapped >= 0);
             xformTrim_     = (fromClient_ && (mapped == op::mangos::kCMSG_CHAR_CREATE ||
                                               mapped == op::mangos::kCMSG_PLAYER_LOGIN));
+            xformGuidQuery_ = (fromClient_ && opcode == op::client::kQueryByGuid);
 
             char lbl[64], mlbl[64];
             opLabel(lbl, sizeof lbl, opcode, fromClient_);
-            if (mapped < 0) {
+            if (xformGuidQuery_) {
+                // The target query and its body are derived from the guid, so the header waits for the body.
+                log::line("%s op=%s size=%d -> query-by-guid", tag_, lbl, size);
+                forwardBody_ = false;
+                xformBody_.clear();
+            } else if (mapped < 0) {
                 log::line("%s op=%s size=%d -> drop (unmapped client opcode)", tag_, lbl, size);
                 forwardBody_ = false;
             } else if (xformCharEnum_ || xformTrim_) {
@@ -229,7 +235,7 @@ void Pipe::parse() {
 
         int take = (int)buf_.size();
         if (take > bodyRemaining_) take = bodyRemaining_;
-        if (xformCharEnum_ || xformTrim_) {
+        if (xformCharEnum_ || xformTrim_ || xformGuidQuery_) {
             if (take > 0) xformBody_.insert(xformBody_.end(), buf_.begin(), buf_.begin() + take);
         } else {
             if (forwardBody_ && take > 0) net::sendAll(out_, buf_.data(), take);
@@ -249,6 +255,8 @@ void Pipe::parse() {
             emitCharEnum();
         } else if (xformTrim_) {
             emitTrim();
+        } else if (xformGuidQuery_) {
+            emitGuidQuery();
         } else {
             char lbl[64], label[96];
             snprintf(label, sizeof label, "%s body %s", tag_, opLabel(lbl, sizeof lbl, logOpcode_, fromClient_));
@@ -304,6 +312,50 @@ void Pipe::emitTrim() {
              tag_, (int)xformBody_.size(), (int)out.size(), mappedOpcode_);
     log::hex(lbl, out.data(), (int)out.size() < kBodyLogCap ? (int)out.size() : kBodyLogCap);
     xformTrim_ = false;
+}
+
+// Resolve the unit the client asked about by its full 8-byte guid. The vanilla query wants the template
+// entry, which a creature/gameobject guid carries in bits [47:24], together with the guid; a player guid
+// has no entry and takes a name query instead. The guid's high word selects which query the server answers.
+// The client only ever gets object metadata (names) through this path: its other in-world queries carry
+// just the guid counter, which is never a valid template id.
+void Pipe::emitGuidQuery() {
+    xformGuidQuery_ = false;
+    if (xformBody_.size() < 8) return;
+
+    uint64_t guid = 0;
+    memcpy(&guid, xformBody_.data(), 8);
+    uint16_t high  = uint16_t(guid >> 48);
+    uint32_t entry = uint32_t((guid >> 24) & 0xFFFFFF);
+
+    ByteWriter w;
+    int mapped;
+    if (high == 0xF110) {                    // gameobject
+        mapped = op::mangos::kCMSG_GAMEOBJECT_QUERY;
+        w.u32(entry);
+        w.bytes(xformBody_.data(), 8);
+    } else if (high == 0xF130) {             // creature or pet
+        mapped = op::mangos::kCMSG_CREATURE_QUERY;
+        w.u32(entry);
+        w.bytes(xformBody_.data(), 8);
+    } else {                                 // player (and anything without an entry): name query
+        mapped = op::mangos::kCMSG_NAME_QUERY;
+        w.bytes(xformBody_.data(), 8);
+    }
+    Bytes out = w.take();
+
+    int newSize = (int)out.size() + bodyAdjust_;
+    uint8_t header[6] = {0};
+    header[0] = (uint8_t)((newSize >> 8) & 0xff);
+    header[1] = (uint8_t)(newSize & 0xff);
+    header[2] = (uint8_t)(mapped & 0xff);
+    header[3] = (uint8_t)((mapped >> 8) & 0xff);
+    send_.encrypt(header, headerLen_);
+    net::sendAll(out_, header, headerLen_);
+    net::sendAll(out_, out.data(), (int)out.size());
+
+    char mlbl[64];
+    log::line("%s query-by-guid -> %s entry=%u", tag_, opLabel(mlbl, sizeof mlbl, mapped, false), entry);
 }
 
 // Emit the world-access grant the client requires before it will start streaming the map and its objects.
