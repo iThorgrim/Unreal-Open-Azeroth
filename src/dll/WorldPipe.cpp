@@ -20,46 +20,11 @@ static constexpr int kBodyLogCap = 128;
 
 namespace {
 
-// The client's char record carries the vanilla 1.12 fields verbatim except that each equipment slot omits
-// the per-slot enchant, and the whole list is followed by a mandatory 32-byte key trailer. The slot count
-// is fixed by the client (19 worn + the first bag).
-constexpr int kEquipmentSlots = 20;
-constexpr int kTrailerLen     = 32;
+constexpr int kTrailerLen = 32;
 
-void copyU64(ByteReader& r, ByteWriter& w) { w.u32(r.u32()); w.u32(r.u32()); }
-
-// Reshape a vanilla 1.12 SMSG_CHAR_ENUM body into the form the client parses:
-// [u8 count][count x record][32-byte trailer]. Every field is copied straight through except the equipment
-// enchant, which the client does not read. The trailer is the char-enum protected-region key; we re-keyed
-// that region to ours (azct::install), so the client decrypts and CRC-validates it with azct::kSlot1Key and
-// the empty-list case (count 0) still requires the trailer to be present or it reports the list incomplete.
 Bytes reshapeCharEnum(const uint8_t* body, int len) {
-    ByteReader r(body, size_t(len));
     ByteWriter w;
-    uint8_t count = r.u8();
-    w.u8(count);
-    for (uint8_t i = 0; i < count; ++i) {
-        copyU64(r, w);                                            // guid
-        w.cstr(r.cstr());                                         // name
-        w.u8(r.u8()); w.u8(r.u8()); w.u8(r.u8());                 // race, class, gender
-        w.u8(r.u8()); w.u8(r.u8()); w.u8(r.u8()); w.u8(r.u8());   // skin, face, hairStyle, hairColor
-        w.u8(r.u8());                                            // facialHair
-        w.u8(r.u8());                                            // level
-        w.u32(r.u32());                                          // zone
-        w.u32(r.u32());                                          // map
-        w.u32(r.u32()); w.u32(r.u32()); w.u32(r.u32());          // position x, y, z
-        w.u32(r.u32());                                          // guildId
-        w.u32(r.u32());                                          // charFlags
-        w.u8(r.u8());                                            // firstLogin
-        w.u32(r.u32());                                          // petDisplayId
-        w.u32(r.u32());                                          // petLevel
-        w.u32(r.u32());                                          // petFamily
-        for (int s = 0; s < kEquipmentSlots; ++s) {
-            w.u32(r.u32());                                      // equipment displayId
-            w.u8(r.u8());                                        // equipment inventoryType
-            r.u32();                                            // enchant: in the vanilla record, unread here
-        }
-    }
+    w.bytes(body, size_t(len));
     w.bytes(azct::kSlot1Key, kTrailerLen);
     return w.take();
 }

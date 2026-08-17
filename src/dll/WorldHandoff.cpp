@@ -1,32 +1,28 @@
 #include "WorldHandoff.h"
 #include "AuthProxy.h"
 #include "Offsets.h"
+#include "Config.h"
+#include "Settings.h"
 #include "Log.h"
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <cstdint>
-#include <cwchar>
+#include <cstdio>
 #include <MinHook.h>
 
 namespace uoa::worldhandoff {
 namespace {
 
-// The realmd connection hangs off a fixed subsystem member; LoginToWorld reads it to rebuild the world
-// channel. Readiness is taken from the auth proxy's protocol state, not from client memory.
-constexpr uintptr_t kSubsysRealmdConn = 0x100;   // subsystem -> realmd connection
-
 // FName find type: 1 = add the name if it is not already interned, matching the native login pump's call.
 constexpr int kFNameAdd = 1;
 
-// The realm destination the client received in the b1 realm list. It is passed as LoginToWorld's address
-// argument, which set-realm feeds into the rebuilt world channel's URL - the field the client actually
-// connects through; the connect hook then rewrites this port to the world proxy.
-const wchar_t kRealmAddr[] = L"127.0.0.1:8085";
+constexpr uintptr_t kSubsysLoginController = 0xf0;  // subsystem -> login controller (W)
+constexpr uintptr_t kCtrlRealmName         = 0x08;  // controller -> committed realm display-name object (arg3)
+constexpr uintptr_t kNameWrapperCount      = 0x08;  // name wrapper {obj@+0, count@+8}; count 0 = uncommitted
 
-// The client's FString is a TArray<TCHAR>: data pointer, then ArrayNum (element count including the null
-// terminator), then ArrayMax. LoginToWorld's address argument is copied by a plain FString copy
-// constructor that reads exactly {data, num} and allocates num*sizeof(TCHAR); ArrayMax is unread here.
+// arg2's copy-constructor reads an FString as {data ptr, ArrayNum, ArrayMax} and copies exactly ArrayNum
+// wide chars; ArrayNum counts the null terminator, ArrayMax is unread here.
 struct FStringView {
     const wchar_t* data;
     int32_t        num;
@@ -56,18 +52,24 @@ void tryHandoff() {
     __try {
         void* subsystem = resolveSubsystem(base);
         if (!subsystem) return;
-        void* realmdConn = *(void**)((uint8_t*)subsystem + kSubsysRealmdConn);
-        if (!realmdConn) return;
 
-        int32_t len = (int32_t)(wcslen(kRealmAddr) + 1);   // ArrayNum counts the null terminator
-        FStringView addr{ kRealmAddr, len, len };          // address argument -> world channel URL
-        // The name argument is copied by a different, type-aware copy that would dereference its data as a
-        // reference-counted object with a vtable; a count of 0 makes that copy take its empty path, so we
-        // hand it an empty value. set-realm stores it in a field the connect path does not read.
-        FStringView name{ nullptr, 0, 0 };
+        auto* controller = *(uint8_t**)((uint8_t*)subsystem + kSubsysLoginController);
+        if (!controller) return;
+        void* nameObj = controller + kCtrlRealmName;   // arg3: display-name wrapper {obj, count}
+
+        if (*(int32_t*)((uint8_t*)nameObj + kNameWrapperCount) == 0) return;
+
+        // arg2 is our world-proxy destination, not a client-memory field: host from realmlist.wtf, port the
+        // connect hook redirects to the world proxy. Built as an FString the copy-constructor accepts.
+        wchar_t addrBuf[128];
+        int addrLen = swprintf(addrBuf, 128, L"%hs:%hu",
+                               settings().forwardHost.c_str(), (unsigned short)config::kWorldPort);
+        if (addrLen <= 0) return;
+        FStringView addr{ addrBuf, addrLen + 1, addrLen + 1 };   // ArrayNum counts the null terminator
+
         g_fired = true;   // latch before the call so a re-entrant pump cannot fire the handoff twice
-        log::line("[handoff] forcing world login: addr=%ls", kRealmAddr);
-        ((LoginToWorldFn)(base + off::kLoginToWorld))(subsystem, &addr, &name);
+        log::line("[handoff] forcing world login: addr=%ls", addrBuf);
+        ((LoginToWorldFn)(base + off::kLoginToWorld))(subsystem, &addr, nameObj);
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         // A poll landing during subsystem init/teardown can momentarily expose stale pointers; the guard
         // turns that into a skipped frame rather than a crash.
