@@ -1,5 +1,4 @@
 #pragma once
-#include "Settings.h"
 #include "OpCodes.h"
 
 namespace uoa::world {
@@ -22,13 +21,17 @@ inline int mapClientOpcode(int clientOpcode)
     return clientOpcode;            // assume a shared vanilla opcode
 }
 
-// Maps a mangos 1.12 opcode to the client's world opcode. The client keeps server->client
-// opcodes at their vanilla numbers (only its client->server side is renumbered), so this is
-// identity. Notably SMSG_CHAR_ENUM stays 0x3B: relabelling it to 0x271 drove a world-load
-// (free camera, no UI), because 0x271 is the client's scene-load opcode, not the char list.
+// Maps a mangos 1.12 opcode to the client's world opcode. Most server->client opcodes share their
+// vanilla numbers, but some in the char-select flow are renumbered and must be relabelled or the client
+// ignores the packet: SMSG_CHAR_ENUM (0x3B) is the client's 0x478 (its scene-load opcode is 0x271, so
+// relabelling to that drove a world-load with free camera and no UI instead of the char list).
 inline int mapServerOpcode(int serverOpcode)
 {
-    if (serverOpcode == op::mangos::kSMSG_CHAR_ENUM) return settings().charEnumOpcode;
+    switch (serverOpcode) {
+        case op::mangos::kSMSG_CHAR_ENUM:   return op::client::kCharEnumResp;     // 0x478
+        case op::mangos::kSMSG_CHAR_CREATE: return op::client::kCharCreateResp;   // 0x232
+        case op::mangos::kSMSG_CHAR_DELETE: return op::client::kCharDeleteResp;   // 0x233
+    }
     return serverOpcode;
 }
 

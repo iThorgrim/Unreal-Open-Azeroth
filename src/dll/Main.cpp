@@ -54,7 +54,6 @@ DWORD WINAPI boot(LPVOID) {
     WSAStartup(MAKEWORD(2, 2), &wsa);
 
     loadRealmlist();
-    loadWorldConfig();
 
     static Listener authListener  { config::kProxyAuth,  "AUTH",  authThread };
     static Listener worldListener { config::kProxyWorld, "WORLD", worldThread };

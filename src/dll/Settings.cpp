@@ -120,34 +120,4 @@ void loadDiscordConfig() {
     log::line("[discord] discord.wtf missing -> presence unchanged");
 }
 
-void loadWorldConfig() {
-    Settings& s = settings();
-    for (const std::string& path : configPaths("world.wtf")) {
-        FILE* f = fopen(path.c_str(), "rb");
-        if (!f) continue;
-
-        char line[256];
-        while (fgets(line, sizeof line, f)) {
-            char* p = line;
-            while (*p == ' ' || *p == '\t') ++p;
-            if (*p == '#' || *p == ';' || *p == '\r' || *p == '\n' || !*p) continue;
-
-            char key[32];
-            int k = 0;
-            while (*p && *p != ' ' && *p != '\t' && *p != '=' && k < 31)
-                key[k++] = char(tolower((unsigned char)*p++));
-            key[k] = 0;
-
-            while (*p == ' ' || *p == '\t' || *p == '=') ++p;
-
-            if (!strcmp(key, "charenum") || !strcmp(key, "charenum_opcode"))
-                s.charEnumOpcode = (int)strtol(p, nullptr, 0);   // base 0: accepts 0x.. or decimal
-        }
-        fclose(f);
-        log::line("[world] world.wtf: charenum=0x%03X  (%s)", s.charEnumOpcode, path.c_str());
-        return;
-    }
-    log::line("[world] world.wtf missing -> charenum=0x%03X (default)", s.charEnumOpcode);
-}
-
 } // namespace uoa

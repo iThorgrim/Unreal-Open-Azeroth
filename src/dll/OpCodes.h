@@ -41,19 +41,25 @@ inline constexpr int kCMSG_CHAR_CREATE    = 0x036;
 inline constexpr int kCMSG_CHAR_DELETE    = 0x038;
 inline constexpr int kCMSG_PING           = 0x1DC;
 inline constexpr int kSMSG_CHAR_ENUM      = 0x03B;
+inline constexpr int kSMSG_CHAR_CREATE    = 0x03A;   // server->client: 1-byte char-create result code
+inline constexpr int kSMSG_CHAR_DELETE    = 0x03C;   // server->client: 1-byte char-delete result code
 inline constexpr int kSMSG_AUTH_CHALLENGE = 0x1EC;   // server->client: carries the u32 auth seed
 inline constexpr int kCMSG_AUTH_SESSION   = 0x1ED;   // client->server: build, account, clientSeed, digest
 inline constexpr int kSMSG_AUTH_RESPONSE  = 0x1EE;   // server->client: first header-crypted server frame
 }
 
 // ---- client (UE) world opcodes ----
-// The client renumbers its client->server world opcodes above the vanilla range; its server->client
-// side keeps vanilla numbers (so SMSG_CHAR_ENUM stays 0x3B).
+// The client renumbers world opcodes on BOTH directions. Auth/ping keep vanilla numbers, but the
+// char-select flow is renumbered each way and must be remapped in OpcodeMap.h or the client ignores the
+// packet. Values read from the client's own dispatch tables (C->S packet ctor / S->C handler table).
 namespace client {
-inline constexpr int kCharListReq = 0x060;   // -> CMSG_CHAR_ENUM
-inline constexpr int kPing        = 0x111;   // -> CMSG_PING
-inline constexpr int kCharCreate  = 0x299;   // -> CMSG_CHAR_CREATE
-inline constexpr int kCharDelete  = 0x221;   // -> CMSG_CHAR_DELETE
+inline constexpr int kCharListReq   = 0x060;   // C->S -> CMSG_CHAR_ENUM
+inline constexpr int kPing          = 0x111;   // C->S -> CMSG_PING
+inline constexpr int kCharCreate    = 0x299;   // C->S -> CMSG_CHAR_CREATE
+inline constexpr int kCharDelete    = 0x221;   // C->S -> CMSG_CHAR_DELETE
+inline constexpr int kCharEnumResp  = 0x478;   // S->C <- SMSG_CHAR_ENUM
+inline constexpr int kCharCreateResp = 0x232;  // S->C <- SMSG_CHAR_CREATE
+inline constexpr int kCharDeleteResp = 0x233;  // S->C <- SMSG_CHAR_DELETE
 }
 
 } // namespace uoa::op
