@@ -38,14 +38,32 @@ inline constexpr uint8_t kRealmList      = 0x10;   // CMD_REALM_LIST
 namespace mangos {
 inline constexpr int kCMSG_CHAR_ENUM      = 0x037;
 inline constexpr int kCMSG_CHAR_CREATE    = 0x036;
-inline constexpr int kCMSG_CHAR_DELETE    = 0x038;
-inline constexpr int kCMSG_PING           = 0x1DC;
+inline constexpr int kCMSG_CHAR_DELETE     = 0x038;
+inline constexpr int kCMSG_PLAYER_LOGIN    = 0x03D;   // client->server: enter world with the selected char
+inline constexpr int kCMSG_CREATURE_QUERY  = 0x060;   // client->server: u32 entry + u64 guid (response is 0x061)
+inline constexpr int kCMSG_SET_SELECTION   = 0x13D;   // client->server: u64 guid of the targeted unit
+inline constexpr int kCMSG_ZONEUPDATE      = 0x1F4;   // client->server: u32 zone id
+inline constexpr int kCMSG_SET_ACTIVE_MOVER = 0x26A;  // client->server: u64 guid of the unit the client moves
+inline constexpr int kCMSG_PING            = 0x1DC;
 inline constexpr int kSMSG_CHAR_ENUM      = 0x03B;
 inline constexpr int kSMSG_CHAR_CREATE    = 0x03A;   // server->client: 1-byte char-create result code
 inline constexpr int kSMSG_CHAR_DELETE    = 0x03C;   // server->client: 1-byte char-delete result code
 inline constexpr int kSMSG_AUTH_CHALLENGE = 0x1EC;   // server->client: carries the u32 auth seed
 inline constexpr int kCMSG_AUTH_SESSION   = 0x1ED;   // client->server: build, account, clientSeed, digest
 inline constexpr int kSMSG_AUTH_RESPONSE  = 0x1EE;   // server->client: first header-crypted server frame
+
+// server->client world stream. The x64 client owns movement (UE-replicated) and only reads the object
+// stream through one renumbered handler, so these are remapped or dropped rather than forwarded verbatim.
+inline constexpr int kSMSG_UPDATE_OBJECT            = 0x0A9;   // uncompressed object update
+inline constexpr int kSMSG_COMPRESSED_UPDATE_OBJECT = 0x1F6;   // zlib(u32 rawSize + deflate) object update
+inline constexpr int kSMSG_LOGIN_VERIFY_WORLD      = 0x236;    // map id + spawn position + orientation
+inline constexpr int kSMSG_MONSTER_MOVE            = 0x0DD;    // spline move; classic body corrupts the x64 actor
+inline constexpr int kSMSG_MONSTER_MOVE_TRANSPORT  = 0x2AE;
+inline constexpr int kSMSG_SPELL_START             = 0x131;
+inline constexpr int kSMSG_SPELL_GO                = 0x132;
+inline constexpr int kSMSG_SPLINE_MOVE_FIRST       = 0x304;    // contiguous spline-move state block, 0x304..0x30E
+inline constexpr int kSMSG_SPLINE_MOVE_LAST        = 0x30E;
+inline constexpr int kSMSG_SPLINE_MOVE_ROOT        = 0x31A;    // numbered apart from the block
 }
 
 // ---- client (UE) world opcodes ----
@@ -57,9 +75,21 @@ inline constexpr int kCharListReq   = 0x060;   // C->S -> CMSG_CHAR_ENUM
 inline constexpr int kPing          = 0x111;   // C->S -> CMSG_PING
 inline constexpr int kCharCreate    = 0x299;   // C->S -> CMSG_CHAR_CREATE
 inline constexpr int kCharDelete    = 0x221;   // C->S -> CMSG_CHAR_DELETE
+inline constexpr int kPlayerLogin   = 0x4EE;   // C->S -> CMSG_PLAYER_LOGIN (guid + locale)
+inline constexpr int kCreatureQuery = 0x0DE;   // C->S -> CMSG_CREATURE_QUERY (u32 entry + u64 guid)
+inline constexpr int kQueryEntry2   = 0x05D;   // C->S -> CMSG_CREATURE_QUERY (same query-by-entry body)
+inline constexpr int kQueryEntry3   = 0x143;   // C->S -> CMSG_CREATURE_QUERY (same query-by-entry body)
+inline constexpr int kSetActiveMover = 0x011;  // C->S -> CMSG_SET_ACTIVE_MOVER (u64 guid the client controls)
+inline constexpr int kSetSelection  = 0x159;   // C->S -> CMSG_SET_SELECTION (u64 guid)
+inline constexpr int kZoneUpdate    = 0x1AB;   // C->S -> CMSG_ZONEUPDATE (u32 zone id)
 inline constexpr int kCharEnumResp  = 0x478;   // S->C <- SMSG_CHAR_ENUM
 inline constexpr int kCharCreateResp = 0x232;  // S->C <- SMSG_CHAR_CREATE
 inline constexpr int kCharDeleteResp = 0x233;  // S->C <- SMSG_CHAR_DELETE
+inline constexpr int kCompressedUpdate = 0x1FC; // S->C <- SMSG_(COMPRESSED_)UPDATE_OBJECT; the live update handler
+                                                // (the vanilla 0x1F6 slot is an inert stub, so the pawn never spawns)
+inline constexpr int kWorldAccess      = 0x527; // S->C injected before LOGIN_VERIFY_WORLD to lift the world gate
+                                                // (u8 != 0 = granted, u32 = 0 = no countdown); 0x236 alone does not
+                                                // start the map/NPC stream
 }
 
 } // namespace uoa::op

@@ -37,15 +37,20 @@ Bytes reshapeCharEnum(const uint8_t* body, int len) {
     return w.take();
 }
 
-// Trim a CMSG_CHAR_CREATE body to its exact vanilla 1.12 length. The client appends a trailing byte the
-// vanilla server does not read, which makes the server's packet validator reject the size; the vanilla body
-// is the name (a null-terminated string) followed by nine appearance/outfit bytes, so we keep name + 9 and
-// drop anything past it.
-Bytes trimCharCreate(const uint8_t* body, int len) {
-    ByteReader r(body, size_t(len));
-    r.cstr();                                              // name, read through its terminator
-    size_t vanilla = (size_t(len) - r.remaining()) + 9;   // + race, class, gender, skin, face, hairStyle, hairColor, facialHair, outfitId
-    if (vanilla > size_t(len)) vanilla = size_t(len);     // a short body is forwarded as-is, never grown
+// Trim a client->server body the client padded with trailing bytes the vanilla 1.12 server rejects (its
+// packet validator flags the leftover size), back to its exact vanilla length. CHAR_CREATE is a name
+// cstring + nine appearance/outfit bytes; PLAYER_LOGIN is a single u64 guid (the client suffixes a locale
+// string). Anything past the vanilla body is dropped.
+Bytes trimClientBody(int mangosOpcode, const uint8_t* body, int len) {
+    size_t vanilla = size_t(len);
+    if (mangosOpcode == op::mangos::kCMSG_CHAR_CREATE) {
+        ByteReader r(body, size_t(len));
+        r.cstr();                                          // name, read through its terminator
+        vanilla = (size_t(len) - r.remaining()) + 9;       // + race, class, gender, skin, face, hairStyle, hairColor, facialHair, outfitId
+    } else if (mangosOpcode == op::mangos::kCMSG_PLAYER_LOGIN) {
+        vanilla = 8;                                       // u64 guid
+    }
+    if (vanilla > size_t(len)) vanilla = size_t(len);      // a short body is forwarded as-is, never grown
     ByteWriter w;
     w.bytes(body, vanilla);
     return w.take();
@@ -188,18 +193,20 @@ void Pipe::parse() {
             mappedOpcode_ = mapped;
             bodyBuf_.clear();
 
-            // Two bodies are buffered whole and their header deferred until the rebuilt size is known: the
-            // server's char list (reshaped with its key trailer) and the client's char-create (trailing byte
-            // trimmed). Everything else streams straight through.
-            xformCharEnum_   = (!fromClient_ && opcode == op::mangos::kSMSG_CHAR_ENUM && mapped >= 0);
-            xformCharCreate_ = (fromClient_ && mapped == op::mangos::kCMSG_CHAR_CREATE);
+            // Some bodies are buffered whole and their header deferred until the rebuilt size is known: the
+            // server's char list (reshaped with its key trailer) and a few client packets the client pads
+            // with trailing bytes (char-create, player-login) which are trimmed to vanilla length. Everything
+            // else streams straight through.
+            xformCharEnum_ = (!fromClient_ && opcode == op::mangos::kSMSG_CHAR_ENUM && mapped >= 0);
+            xformTrim_     = (fromClient_ && (mapped == op::mangos::kCMSG_CHAR_CREATE ||
+                                              mapped == op::mangos::kCMSG_PLAYER_LOGIN));
 
             char lbl[64], mlbl[64];
             opLabel(lbl, sizeof lbl, opcode, fromClient_);
             if (mapped < 0) {
                 log::line("%s op=%s size=%d -> drop (unmapped client opcode)", tag_, lbl, size);
                 forwardBody_ = false;
-            } else if (xformCharEnum_ || xformCharCreate_) {
+            } else if (xformCharEnum_ || xformTrim_) {
                 log::line("%s op=%s size=%d -> %s (%s)", tag_, lbl, size,
                           opLabel(mlbl, sizeof mlbl, mapped, false),
                           xformCharEnum_ ? "reshape" : "trim");
@@ -209,6 +216,9 @@ void Pipe::parse() {
                 if (mapped != opcode) log::line("%s op=%s size=%d -> %s", tag_, lbl, size,
                                                 opLabel(mlbl, sizeof mlbl, mapped, false));
                 else                  log::line("%s op=%s size=%d", tag_, lbl, size);
+                // The client gates its map/NPC stream behind a world-access grant; LOGIN_VERIFY_WORLD alone
+                // does not lift it, so the grant is emitted immediately ahead of the verify frame.
+                if (!fromClient_ && opcode == op::mangos::kSMSG_LOGIN_VERIFY_WORLD) injectWorldAccess();
                 header[2] = (uint8_t)(mapped & 0xff);
                 header[3] = (uint8_t)((mapped >> 8) & 0xff);
                 send_.encrypt(header, headerLen_);
@@ -219,7 +229,7 @@ void Pipe::parse() {
 
         int take = (int)buf_.size();
         if (take > bodyRemaining_) take = bodyRemaining_;
-        if (xformCharEnum_ || xformCharCreate_) {
+        if (xformCharEnum_ || xformTrim_) {
             if (take > 0) xformBody_.insert(xformBody_.end(), buf_.begin(), buf_.begin() + take);
         } else {
             if (forwardBody_ && take > 0) net::sendAll(out_, buf_.data(), take);
@@ -237,8 +247,8 @@ void Pipe::parse() {
 
         if (xformCharEnum_) {
             emitCharEnum();
-        } else if (xformCharCreate_) {
-            emitCharCreate();
+        } else if (xformTrim_) {
+            emitTrim();
         } else {
             char lbl[64], label[96];
             snprintf(label, sizeof label, "%s body %s", tag_, opLabel(lbl, sizeof lbl, logOpcode_, fromClient_));
@@ -272,12 +282,12 @@ void Pipe::emitCharEnum() {
     xformCharEnum_ = false;
 }
 
-// Trim the fully buffered CMSG_CHAR_CREATE body to its exact vanilla length and forward it under a header
-// carrying the new size and the renumbered opcode. The client appends a trailing byte the vanilla server
-// rejects; dropping it lets the create parse cleanly so the server's success reply reaches the client. The
-// client->server header is six bytes (a four-byte opcode), so the upper opcode bytes are zeroed.
-void Pipe::emitCharCreate() {
-    Bytes out = trimCharCreate(xformBody_.data(), (int)xformBody_.size());
+// Trim the fully buffered client packet to its exact vanilla length and forward it under a header carrying
+// the new size and the renumbered opcode. The client pads these packets with trailing bytes the vanilla
+// server rejects; dropping them lets the packet parse cleanly. The client->server header is six bytes (a
+// four-byte opcode), so the upper opcode bytes are zeroed.
+void Pipe::emitTrim() {
+    Bytes out = trimClientBody(mappedOpcode_, xformBody_.data(), (int)xformBody_.size());
     int newSize = (int)out.size() + bodyAdjust_;
 
     uint8_t header[6] = {0};
@@ -290,10 +300,29 @@ void Pipe::emitCharCreate() {
     net::sendAll(out_, out.data(), (int)out.size());
 
     char lbl[96];
-    snprintf(lbl, sizeof lbl, "%s CMSG_CHAR_CREATE trimmed %d -> %d body bytes",
-             tag_, (int)xformBody_.size(), (int)out.size());
+    snprintf(lbl, sizeof lbl, "%s trimmed %d -> %d body bytes (op 0x%X)",
+             tag_, (int)xformBody_.size(), (int)out.size(), mappedOpcode_);
     log::hex(lbl, out.data(), (int)out.size() < kBodyLogCap ? (int)out.size() : kBodyLogCap);
-    xformCharCreate_ = false;
+    xformTrim_ = false;
+}
+
+// Emit the world-access grant the client requires before it will start streaming the map and its objects.
+// Body is a status byte (non-zero = access granted) followed by a u32 open time (zero = no countdown). Only
+// the header is header-crypted, on the same send cipher as the frames around it, so both sides stay in step.
+void Pipe::injectWorldAccess() {
+    const uint8_t body[5] = { 0x01, 0x00, 0x00, 0x00, 0x00 };
+    int newSize = (int)sizeof body + bodyAdjust_;
+
+    uint8_t header[6] = {0};
+    header[0] = (uint8_t)((newSize >> 8) & 0xff);
+    header[1] = (uint8_t)(newSize & 0xff);
+    header[2] = (uint8_t)(op::client::kWorldAccess & 0xff);
+    header[3] = (uint8_t)((op::client::kWorldAccess >> 8) & 0xff);
+    send_.encrypt(header, headerLen_);
+    net::sendAll(out_, header, headerLen_);
+    net::sendAll(out_, body, sizeof body);
+
+    log::line("%s injected WORLD_ACCESS (0x527) ahead of LOGIN_VERIFY_WORLD", tag_);
 }
 
 } // namespace uoa::world

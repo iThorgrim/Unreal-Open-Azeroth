@@ -34,7 +34,8 @@ private:
     void bridgePlaintext(uint8_t* pkt, int total, int opcode);   // seed capture / digest rewrite on the pre-crypt packet
     void rewriteAuthSession(uint8_t* pkt, int total);            // recompute the CMSG_AUTH_SESSION digest with cmangos K
     void emitCharEnum();                                         // reshape the buffered char list and forward it
-    void emitCharCreate();                                       // trim the buffered char-create body and forward it
+    void emitTrim();                                             // trim a buffered client packet to vanilla length
+    void injectWorldAccess();                                    // emit the world-access grant ahead of LOGIN_VERIFY_WORLD
 
     SOCKET       out_;
     int          headerLen_;
@@ -46,8 +47,8 @@ private:
     bool         cryptActive_   = false;
     bool         inBody_        = false;
     bool         forwardBody_   = true;
-    bool         xformCharEnum_   = false; // current body is SMSG_CHAR_ENUM, buffered whole for reshaping
-    bool         xformCharCreate_ = false; // current body is CMSG_CHAR_CREATE, buffered whole for trimming
+    bool         xformCharEnum_ = false;   // current body is SMSG_CHAR_ENUM, buffered whole for reshaping
+    bool         xformTrim_     = false;   // current body is a padded client packet, buffered whole for trimming
     int          bodyRemaining_ = 0;
     int          logOpcode_     = 0;       // original opcode of the packet whose body we are accumulating
     int          mappedOpcode_  = 0;       // renumbered opcode to stamp on a rebuilt body's header
