@@ -4,6 +4,14 @@
 #include "Settings.h"
 #include "ConnectHook.h"
 #include "WorldKey.h"
+#include "AzctKeys.h"
+#include "ProofBridge.h"
+#include "WorldHandoff.h"
+#include "CrashProbe.h"
+#include "EnterWorldGate.h"
+#include "SocketProbe.h"
+#include "AuthProbe.h"
+#include "TicketProbe.h"
 #include "AuthProxy.h"
 #include "WorldProxy.h"
 #include "DiscordPresence.h"
@@ -51,7 +59,6 @@ DWORD WINAPI boot(LPVOID) {
 
     loadRealmlist();
     loadWorldConfig();
-    advanceSweepCursor();
 
     static Listener authListener  { config::kProxyAuth,  "AUTH",  authThread };
     static Listener worldListener { config::kProxyWorld, "WORLD", worldThread };
@@ -61,6 +68,14 @@ DWORD WINAPI boot(LPVOID) {
     Sleep(200);   // let the listeners bind before hooking connect
     hook::install();
     worldkey::install();
+    crashprobe::install();
+    azct::install();          // re-key the AZFNPROTENC canaries so the client validates on OUR keys
+    enterworld::install();
+    socketprobe::install();
+    authprobe::install();
+    ticketprobe::install();   // AZ-TICKET-v1 KDF field fix (lets the KDF complete on our synthetic session)
+    proof::install();         // align the a3 proof-verify self-check with the M2 we send
+    worldhandoff::install();  // once the realm commits, invoke the native world-login entry from the frame pump
 
     loadDiscordConfig();
     discord::installAsync();

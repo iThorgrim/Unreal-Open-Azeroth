@@ -142,53 +142,12 @@ void loadWorldConfig() {
 
             if (!strcmp(key, "charenum") || !strcmp(key, "charenum_opcode"))
                 s.charEnumOpcode = (int)strtol(p, nullptr, 0);   // base 0: accepts 0x.. or decimal
-            else if (!strcmp(key, "sweep_lo"))    s.sweepLo    = (int)strtol(p, nullptr, 0);
-            else if (!strcmp(key, "sweep_hi"))    s.sweepHi    = (int)strtol(p, nullptr, 0);
-            else if (!strcmp(key, "auto_sweep"))  s.autoSweep  = strtol(p, nullptr, 0) != 0;
-            else if (!strcmp(key, "sweep_step"))  s.sweepStep  = (int)strtol(p, nullptr, 0);
-            else if (!strcmp(key, "sweep_start"))  s.sweepStart  = (int)strtol(p, nullptr, 0);
-            else if (!strcmp(key, "sweep_end"))    s.sweepEnd    = (int)strtol(p, nullptr, 0);
-            else if (!strcmp(key, "sweep_target")) s.sweepTarget = (int)strtol(p, nullptr, 0);
-            else if (!strcmp(key, "sweep_zero"))   s.sweepZero   = strtol(p, nullptr, 0) != 0;
         }
         fclose(f);
-        if (s.autoSweep)
-            log::line("[world] world.wtf: auto-sweep 0x%03X..0x%03X step 0x%X  (%s)", s.sweepStart, s.sweepEnd, s.sweepStep, path.c_str());
-        else if (s.sweepHi > s.sweepLo)
-            log::line("[world] world.wtf: sweep 0x%03X..0x%03X  (%s)", s.sweepLo, s.sweepHi, path.c_str());
-        else
-            log::line("[world] world.wtf: charenum=0x%03X  (%s)", s.charEnumOpcode, path.c_str());
+        log::line("[world] world.wtf: charenum=0x%03X  (%s)", s.charEnumOpcode, path.c_str());
         return;
     }
     log::line("[world] world.wtf missing -> charenum=0x%03X (default)", s.charEnumOpcode);
-}
-
-// State file holding the next band's low opcode, so each launch scans a fresh band on its own.
-static const char* kSweepStateFile = "UnrealOpenAzeroth.sweep";
-
-void advanceSweepCursor() {
-    Settings& s = settings();
-    if (!s.autoSweep) return;
-
-    int lo = s.sweepStart;
-    if (FILE* f = fopen(kSweepStateFile, "r")) {
-        char buf[32];
-        if (fgets(buf, sizeof buf, f)) lo = (int)strtol(buf, nullptr, 0);
-        fclose(f);
-    }
-    if (lo < s.sweepStart || lo >= s.sweepEnd) lo = s.sweepStart;   // wrap when the scan completes
-
-    int hi = lo + s.sweepStep;
-    if (hi > s.sweepEnd) hi = s.sweepEnd;
-
-    s.sweepLo = lo;
-    s.sweepHi = hi;
-
-    if (FILE* f = fopen(kSweepStateFile, "w")) {
-        fprintf(f, "0x%X\n", hi);   // where the next launch resumes
-        fclose(f);
-    }
-    log::line("[world] auto-sweep band this launch: 0x%03X..0x%03X (next 0x%03X)", lo, hi, hi);
 }
 
 } // namespace uoa

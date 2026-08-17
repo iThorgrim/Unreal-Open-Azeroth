@@ -1,7 +1,6 @@
 #include "WorldProxy.h"
 #include "WorldPipe.h"
 #include "OpcodeMap.h"
-#include "CharEnum.h"
 #include "Net.h"
 #include "Settings.h"
 #include "Config.h"
@@ -38,11 +37,13 @@ void handleSession(SOCKET client) {
     }
     log::line("[world] session (translate)");
 
-    // Two translating pipes sharing the captured key, each with its own crypt state. The client
-    // side also reshapes the char-enum body from the vanilla wire format into the client's.
-    Pipe toServer(mangosd, 6, mapClientOpcode, "[world] C->S");   // client -> mangos
-    Pipe toClient(client,  4, mapServerOpcode, "[world] S->C",    // mangos -> client
-                  wantsBodyRewrite, rewriteCharEnum);
+    // Two translating pipes, each with its own crypt state, keyed per direction (a8 world key toward the
+    // client, cmangos K toward mangos). The shared bridge carries the auth seed from the server->client
+    // challenge to the client->server digest rewrite. Bodies pass through unchanged - the client is
+    // vanilla-wire, only its opcode numbers are renumbered.
+    AuthBridge bridge;
+    Pipe toServer(mangosd, 6, mapClientOpcode, "[world] C->S", &bridge);   // client -> mangos
+    Pipe toClient(client,  4, mapServerOpcode, "[world] S->C", &bridge);   // mangos -> client
 
     Pump down{ mangosd, &toClient };
     HANDLE thread = CreateThread(nullptr, 0, pumpThread, &down, 0, nullptr);

@@ -4,13 +4,33 @@
 #include "Net.h"
 #include "Settings.h"
 #include "Config.h"
+#include "Identity.h"
+#include "Srp.h"
+#include "SocketProbe.h"
+#include "AzctCanary.h"
+#include "ProofBridge.h"
+#include "OpCodes.h"
 #include "Log.h"
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <string>
+#include <cstring>
 
 namespace uoa::auth {
+
+std::atomic<bool> g_realmReady{false};
+std::atomic<bool> g_sessionReady{false};
+
+namespace {
+
+uint8_t g_sessionKey[40];
+
+} // namespace
+
+const uint8_t* sessionKey()    { return g_sessionReady.load() ? g_sessionKey : nullptr; }
+int            sessionKeyLen() { return 40; }
+
 namespace {
 
 // mangos WindowsHash(5875): the realmd version check expects crc_hash = SHA1(A || this).
@@ -19,210 +39,283 @@ const uint8_t kWindowsHash5875[20] = {
     0xAB, 0x56, 0xA3, 0x92, 0xE7, 0xCB, 0x73, 0xFC, 0xCA, 0x20,
 };
 
-// Client login-start "a0" -> realmd logon challenge (0x00).
-Bytes toRealmdChallenge(const uint8_t* a0) {
-    uint8_t nameLen = a0[27];
-    std::string account(reinterpret_cast<const char*>(a0) + 28, nameLen);
-    if (size_t z = account.find('\0'); z != std::string::npos) account.resize(z);
-    for (char& c : account) c = char(toupper((unsigned char)c));
-
-    ByteWriter body;
-    body.text("WoW");  body.u8(0);              // "WoW\0"
-    body.u8(1); body.u8(12); body.u8(1);        // game version 1.12.1
-    body.u16(config::kBuild);
-    body.text("68x"); body.u8(0);               // platform "x86" (reversed)
-    body.text("niW"); body.u8(0);               // os "Win" (reversed)
-    body.text("SUne");                          // locale "enUS" (reversed)
-    body.u32(0);                                // timezone bias
-    body.u8(127); body.u8(0); body.u8(0); body.u8(1);   // client ip
-    body.u8(uint8_t(account.size()));
-    body.text(account.c_str());
-
-    ByteWriter pkt;
-    pkt.u8(0x00); pkt.u8(0x08);                 // logon challenge, protocol 8
-    pkt.u16(uint16_t(body.size()));
-    pkt.bytes(body.data());
-    return pkt.take();
-}
-
-// realmd logon challenge -> client "a1" (B | N | salt | g, 0).
-Bytes toClientChallenge(const uint8_t* data, int len) {
-    ByteReader r(data, len);
-    r.u8();                       // cmd
-    r.u8();                       // error
-    uint8_t result = r.u8();
-    if (result != 0x00)
-        return { 0xa1, result, 0x00, 0x00 };
-
-    Bytes    B    = r.take(32);
-    r.u8();                       // g length
-    uint8_t  g    = r.u8();
-    r.u8();                       // N length
-    Bytes    N    = r.take(32);
-    Bytes    salt = r.take(32);
-
-    ByteWriter body;
-    body.bytes(B);
-    body.bytes(N);
-    body.bytes(salt);
-    body.u8(g);
-    body.u8(0);
-
-    ByteWriter pkt;
-    pkt.u8(0xa1); pkt.u8(0x00);
-    pkt.u16(0x0096);   // 150: satisfies both the 130 and 150 thresholds
-    pkt.bytes(body.data());
-    return pkt.take();
-}
-
-// Client proof "a2" -> realmd logon proof (0x01) with a recomputed crc_hash.
-Bytes toRealmdProof(const uint8_t* data, int len) {
-    ByteReader r(data, len);
-    r.u8();                       // cmd
-    r.skip(2);
-    Bytes A  = r.take(32);
-    Bytes M1 = r.take(20);
-
-    Sha1 sha;
-    sha.update(A.data(), A.size());
-    sha.update(kWindowsHash5875, sizeof kWindowsHash5875);
-    uint8_t crc[20];
-    sha.finish(crc);
-
-    ByteWriter pkt;
-    pkt.u8(0x01);
-    pkt.bytes(A);
-    pkt.bytes(M1);
-    pkt.bytes(crc, sizeof crc);
-    pkt.u8(0);                    // numkeys
-    pkt.u8(0);                    // flags
-    return pkt.take();
-}
-
-// realmd logon proof reply -> client "a3".
-Bytes toClientProof(const uint8_t* data, int len) {
-    ByteReader r(data, len);
-    r.u8();                       // cmd
-    uint8_t error = r.u8();
-    if (error != 0x00) {
-        Bytes e = { 0xa3, error };
-        e.resize(26, 0);
-        return e;
-    }
-    Bytes M2 = r.take(20);
-
-    ByteWriter pkt;
-    pkt.u8(0xa3); pkt.u8(0x00);
-    pkt.bytes(M2);
-    pkt.u8(0x00); pkt.u8(0x00); pkt.u8(0x01); pkt.u8(0x00);
-    return pkt.take();
-}
-
-// realmd realmlist (0x10) -> client "b1", advertising the world proxy as the realm address.
-Bytes toClientRealmlist(const uint8_t* data, int len) {
-    if (len < 24) return {};      // too short to hold a realm; caller falls back
-
-    ByteReader r(data, len);
-    r.skip(8);                    // cmd + size + uint32 + realm count
-    Bytes       icon       = r.take(4);
-    uint8_t     flags      = r.u8();
-    std::string name       = r.cstr();
-    r.cstr();                     // realmd-advertised address (discarded)
-    Bytes       population = r.take(4);
-    uint8_t     chars      = r.u8();
-    uint8_t     timezone   = r.u8();
-    uint8_t     id         = r.u8();
-
-    ByteWriter body;
-    body.u32(0);                  // unknown
-    body.u8(0x01);                // one realm
-    body.bytes(icon);
-    body.u8(flags);
-    body.cstr(name);
-    body.cstr(config::kWorldAddr);
-    body.bytes(population);
-    body.u8(chars);
-    body.u8(timezone);
-    body.u8(id);
-    body.u8(0x02); body.u8(0x00); body.u8(0x02); body.u8(0x00);
-
-    ByteWriter pkt;
-    pkt.u8(0xb1);
-    pkt.u16(uint16_t(body.size()));
-    pkt.bytes(body.data());
-    return pkt.take();
-}
-
 } // namespace
 
-void handleSession(SOCKET client) {
-    SOCKET realmd = net::dial(settings().forwardHost.c_str(), config::kRealmdPort);
-    if (realmd == INVALID_SOCKET) {
-        log::line("[auth] realmd unreachable");
-        closesocket(client);
+// The AZRT b1 realm entry keeps the same per-realm shape as the classic realmd entry, only the realm
+// count stays a u8. Rebuild a classic realmd body into it - per realm: u32 type, u8 flags, name cstr,
+// address cstr, u32 population, u8 characters, u8 timezone, u8 id. The b1 handler reads BOTH cstrings
+// unconditionally, so the address must be kept: dropping it shifts every later field and overruns the
+// parse buffer, which trips the archive error flag and silently discards the whole realm list.
+static Bytes azrtRealmBody(const uint8_t* body, int len) {
+    ByteReader r(body, len);
+    ByteWriter out;
+    out.bytes(r.take(4));                 // u32 header (unused)
+    uint8_t count = r.u8();
+    out.u8(count);
+    for (uint8_t i = 0; i < count; ++i) {
+        out.bytes(r.take(4));             // u32 type/icon
+        uint8_t flags = r.u8();
+        out.u8(flags);
+        out.cstr(r.cstr());               // realm name
+        out.cstr(r.cstr());               // realm address (host:port) - the handler reads it unconditionally
+        out.bytes(r.take(4));             // u32 population
+        out.u8(r.u8());                   // characters
+        out.u8(r.u8());                   // timezone
+        out.u8(r.u8());                   // realm id
+        if (flags & 0x04) r.take(5);      // classic SPECIFYBUILD version block - not sent to AZRT
+    }
+    out.bytes(r.take(2));                 // u16 trailer
+    return out.take();
+}
+
+// One realm, synthesized locally (fallback when cmangos realmd is unreachable).
+static Bytes synthRealmlist() {
+    ByteWriter body;
+    body.u32(0);                                      // unknown header
+    body.u8(1);                                       // realm count (u8)
+    body.u32(0);                                      // realm type
+    body.u8(0);                                       // flags
+    body.cstr("Unreal Open Azeroth");                 // name
+    body.cstr("127.0.0.1:8085");                      // address (read unconditionally by the b1 handler)
+    body.u32(0);                                      // population
+    body.u8(0);                                       // characters
+    body.u8(1);                                       // timezone
+    body.u8(1);                                       // realm id
+    body.u16(0x0002);                                 // trailer
+
+    ByteWriter pkt;
+    pkt.u8(op::azrt::kRealmList);
+    pkt.u16(uint16_t(body.size()));
+    pkt.bytes(body.data());
+    return pkt.take();
+}
+
+// Hat 2: authenticate the proxy against the local cmangos realmd with the captured identity (real
+// classic SRP6, not the client's N-mismatched proof), then pull the real realm list. Logs the raw
+// cmangos realm-list body (its exact layout is core/build specific - reformat it precisely once seen)
+// and returns the 40-byte cmangos session key via outK. Returns false on any failure.
+static bool cmangosFetchRealms(uint8_t outK[40], Bytes& outB1) {
+    log::line("[hat2] dialing cmangos realmd %s:%u", settings().forwardHost.c_str(), config::kRealmdPort);
+    SOCKET rd = net::dial(settings().forwardHost.c_str(), config::kRealmdPort);
+    if (rd == INVALID_SOCKET) { log::line("[hat2] realmd unreachable"); return false; }
+
+    DWORD rcvto = 1200;   // keep hat-2 fast: the client disconnects if its b0 goes unanswered too long
+    setsockopt(rd, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&rcvto), sizeof rcvto);
+
+    std::string account = identity::user();   // already uppercase
+
+    ByteWriter body;
+    body.text("WoW");  body.u8(0);
+    body.u8(1); body.u8(12); body.u8(1);
+    body.u16(config::kBuild);
+    body.text("68x"); body.u8(0);
+    body.text("niW"); body.u8(0);
+    body.text("SUne");
+    body.u32(0);
+    body.u8(127); body.u8(0); body.u8(0); body.u8(1);
+    body.u8(uint8_t(account.size()));
+    body.text(account.c_str());
+    ByteWriter pkt; pkt.u8(op::realmd::kLogonChallenge); pkt.u8(0x08); pkt.u16(uint16_t(body.size())); pkt.bytes(body.data());
+    Bytes chal = pkt.take();
+    net::sendAll(rd, chal.data(), int(chal.size()));
+
+    uint8_t c[256];
+    int cl = net::recvExact(rd, c, 119);
+    if (cl < 119 || c[1] != 0x00) {
+        log::hex("[hat2] challenge reply (short/err)", c, cl > 0 ? cl : 0);
+        log::line("[hat2] challenge failed (len=%d)", cl);
+        closesocket(rd); return false;
+    }
+
+    uint8_t A[32], M1[20];
+    if (!srp::classicClientProof(c, cl, account.c_str(), identity::hash(), A, M1, outK)) {
+        log::line("[hat2] proof calc failed"); closesocket(rd); return false;
+    }
+
+    Sha1 crcSha; crcSha.update(A, 32); crcSha.update(kWindowsHash5875, sizeof kWindowsHash5875);
+    uint8_t crc[20]; crcSha.finish(crc);
+
+    ByteWriter pw;
+    pw.u8(op::realmd::kLogonProof); pw.bytes(Bytes(A, A + 32)); pw.bytes(Bytes(M1, M1 + 20));
+    pw.bytes(crc, sizeof crc); pw.u8(0); pw.u8(0);   // crc_hash, numKeys, securityFlags
+    Bytes proof = pw.take();
+    net::sendAll(rd, proof.data(), int(proof.size()));
+
+    // The whole proof reply arrives in one segment; grab it in a single recv so we never wait on a
+    // fixed length that the core may not send (that stall is what timed the client out).
+    uint8_t pr[64];
+    int prn = recv(rd, reinterpret_cast<char*>(pr), sizeof pr, 0);
+    if (prn < 2 || pr[1] != 0x00) {
+        log::line("[hat2] cmangos rejected proof (n=%d error=0x%02X)", prn, prn > 1 ? pr[1] : 0xff);
+        closesocket(rd); return false;
+    }
+    log::line("[hat2] *** cmangos auth OK (account=%s) ***", account.c_str());
+
+    uint8_t rlreq[5] = { op::realmd::kRealmList, 0, 0, 0, 0 };   // CMD_REALM_LIST + u32 padding
+    net::sendAll(rd, rlreq, 5);
+    uint8_t hdr[3];
+    if (net::recvExact(rd, hdr, 3) >= 3 && hdr[0] == op::realmd::kRealmList) {
+        uint16_t rsize = uint16_t(hdr[1] | (hdr[2] << 8));
+        uint8_t rbody[1024];
+        if (rsize > sizeof rbody) rsize = sizeof rbody;
+        int got = net::recvExact(rd, rbody, rsize);
+        log::hex("[hat2] cmangos realmlist body", rbody, got);
+        // Reformat cmangos's classic realmd body into the AZRT b1 shape: drop each realm's address cstr
+        // and keep the count as u8 (the AZRT realm-list handler carries no address and reads a u8 count).
+        if (got >= 6) {
+            Bytes az = azrtRealmBody(rbody, got);
+            ByteWriter p; p.u8(op::azrt::kRealmList); p.u16(uint16_t(az.size())); p.bytes(az);
+            outB1 = p.take();
+            log::hex("[hat2] -> client b1 (real)", outB1.data(), int(outB1.size()));
+        }
+    } else {
+        log::line("[hat2] no realm list reply");
+    }
+    closesocket(rd);
+    return true;
+}
+
+// Hat 1: the DLL plays the AZRT server to the client (custom N/g=2). The SRP verifier is irrelevant -
+// the proof bridge makes the a3 M2 self-check accept our M2 regardless - so we challenge with a fixed
+// placeholder identity. The client still computes its real I=SHA1(user:pass) while answering (the
+// identity hook captures it), which hat-2 below uses for the real cmangos realm list. This is why one
+// login now suffices: we no longer need a relay pass just to capture I.
+static void azrtServe(SOCKET client) {
+    static const uint8_t kPlaceholderId[20] = {
+        0x55,0x4e,0x52,0x45,0x41,0x4c,0x4f,0x50,0x45,0x4e,0x41,0x5a,0x45,0x52,0x4f,0x54,0x48,0x2d,0x76,0x31 };
+    srp::AzrtServer sv;
+    srp::azrtChallenge(kPlaceholderId, sv);
+
+    ByteWriter body;
+    body.bytes(Bytes(sv.Bwire,    sv.Bwire    + 32));
+    body.bytes(Bytes(sv.Nwire,    sv.Nwire    + 32));
+    body.bytes(Bytes(sv.saltWire, sv.saltWire + 32));
+    body.u16(2);                                            // g = 2 (uint16 LE)
+    for (uint8_t b : azct::kSlot0Key) body.u8(b);   // 32-byte AZCT token = our slot-0 key
+    ByteWriter pkt;
+    pkt.u8(op::azrt::kChallenge); pkt.u8(0x00);
+    pkt.u16(uint16_t(body.size()));                         // 130 = 98 SRP + 32 token
+    pkt.bytes(body.data());
+    Bytes a1 = pkt.take();
+    log::hex("[auth] ->a1(azrt)", a1.data(), int(a1.size()));
+    net::sendAll(client, a1.data(), int(a1.size()));
+
+    uint8_t buf[4096];
+    int n = recv(client, reinterpret_cast<char*>(buf), sizeof buf, 0);
+    // The client socket is blocking, so recv only returns <=0 on a real close: 0 = graceful FIN,
+    // -1 = abortive (WSAGetLastError distinguishes a client reset (10054) from a stack abort (10053)).
+    if (n <= 0) { log::line("[auth] azrt: no a2 (recv=%d err=%d)", n, WSAGetLastError()); return; }
+    log::hex("[auth] <-a2(azrt)", buf, n);
+    if (buf[0] != op::azrt::kChallengeReply || n < 55) { log::line("[auth] azrt: bad a2"); return; }
+
+    const uint8_t* A  = buf + 3;    // A[32]
+    const uint8_t* M1 = buf + 35;   // M1[20]
+    // Validate the account against the real cmangos server BEFORE completing auth. The client has now
+    // computed its I (captured by the identity hook while it answered a1), so hat-2 runs a real classic
+    // SRP against cmangos - unknown accounts / wrong passwords are rejected there. We forward that as an
+    // a3 error, so despite the placeholder AZRT verifier only genuinely valid accounts get in.
+    uint8_t cmangosK[40];
+    Bytes   realB1;
+    bool cmangosOk = cmangosFetchRealms(cmangosK, realB1);
+    log::line("[auth] hat2 %s", cmangosOk ? "ok" : "FAILED");
+    if (!cmangosOk) {
+        Bytes bad = { op::azrt::kProof, 0x04 }; bad.resize(26, 0);   // login-failed status -> the client shows the error
+        log::hex("[auth] ->a3 REJECT (cmangos declined the account)", bad.data(), int(bad.size()));
+        net::sendAll(client, bad.data(), int(bad.size()));
         return;
     }
 
-    auto close = [&] { closesocket(client); closesocket(realmd); };
-    uint8_t buf[4096];
+    // Hand cmangos's K to the world proxy: it is the key cmangos verifies the world-channel digest and
+    // header cipher against, and it is available only here where hat-2 derived it.
+    memcpy(g_sessionKey, cmangosK, sizeof g_sessionKey);
+    g_sessionReady.store(true);
+    log::line("[auth] world session key stored for account=%s", identity::user().c_str());
 
-    // a0 -> logon challenge
-    int n = recv(client, reinterpret_cast<char*>(buf), sizeof buf, 0);
-    if (n <= 0 || buf[0] != 0xa0) { close(); return; }
-    log::hex("[auth] <-a0", buf, n);
-    Bytes challenge = toRealmdChallenge(buf);
-    net::sendAll(realmd, challenge.data(), int(challenge.size()));
+    uint8_t M2[20], K[40];
+    srp::azrtFinish(sv, A, M1, M2, K);
+    proof::setSentM2(M2);   // so the client's a3 proof-verify self-check accepts the M2 we send below
 
-    // logon challenge reply -> a1
-    uint8_t chal[256];
-    int chalLen = net::recvExact(realmd, chal, 119);
-    log::hex("[auth] realmd-chal", chal, chalLen);
-    Bytes a1 = toClientChallenge(chal, chalLen);
-    log::hex("[auth] ->a1", a1.data(), int(a1.size()));
-    net::sendAll(client, a1.data(), int(a1.size()));
-    if (a1[1] != 0x00) { close(); return; }
-
-    // a2 -> logon proof
-    n = recv(client, reinterpret_cast<char*>(buf), sizeof buf, 0);
-    if (n <= 0 || buf[0] != 0xa2) { close(); return; }
-    log::hex("[auth] <-a2", buf, n);
-    Bytes proof = toRealmdProof(buf, n);
-    net::sendAll(realmd, proof.data(), int(proof.size()));
-
-    // logon proof reply -> a3
-    uint8_t proofReply[64];
-    int replyLen = net::recvExact(realmd, proofReply, 2);
-    if (replyLen >= 2 && proofReply[1] == 0)
-        replyLen += net::recvExact(realmd, proofReply + 2, 24);
-    log::hex("[auth] realmd-proof", proofReply, replyLen);
-    Bytes a3 = toClientProof(proofReply, replyLen);
-    log::hex("[auth] ->a3", a3.data(), int(a3.size()));
+    // AZRT a3 (proof reply), opcode-0xA3 handler 0x14412ca7d: status(1) + M2[20] + 4 pad = exactly 26
+    // bytes (a trailing byte would be misread as the next opcode). The re-keyed proof-verify checks M2;
+    // our ProofBridge aligns the client's expected digest to this M2.
+    ByteWriter a3w;
+    a3w.u8(op::azrt::kProof); a3w.u8(0x00);
+    a3w.bytes(Bytes(M2, M2 + 20));
+    a3w.u8(0x00); a3w.u8(0x00); a3w.u8(0x00); a3w.u8(0x00);
+    Bytes a3 = a3w.take();
+    log::hex("[auth] ->a3(azrt)", a3.data(), int(a3.size()));
     net::sendAll(client, a3.data(), int(a3.size()));
-    if (a3[1] != 0x00) { close(); return; }
-    log::line("[auth] *** AUTH OK ***");
+    log::line("[auth] *** AZRT AUTH OK ***");
 
-    // b0 -> realmlist
-    n = recv(client, reinterpret_cast<char*>(buf), sizeof buf, 0);
-    if (n <= 0 || buf[0] != 0xb0) { close(); return; }
-    uint8_t request[5] = { 0x10, 0, 0, 0, 0 };
-    net::sendAll(realmd, request, sizeof request);
+    // From a3 on the client is asynchronous: once auth succeeds it asks for the realm list (b0) on its
+    // own, and it answers our a5 ticket with a6 whenever its KDF finishes - the two interleave. Sending a
+    // fixed a5->a6-reply->a7->a8 script mis-reads whichever frame arrives first (a b0 got consumed as the
+    // a6), so the realm list was never answered and the realm screen stayed empty. Dispatch by opcode
+    // instead: a5 primes the KDF, then every inbound frame is handled for what it actually is.
+    ByteWriter a5w; a5w.u8(op::azrt::kTicket); a5w.u8(0x00);
+    for (int i = 0; i < 16; ++i) a5w.u8(uint8_t(i));
+    Bytes a5 = a5w.take();
+    log::hex("[auth] ->a5(ticket)", a5.data(), int(a5.size()));
+    net::sendAll(client, a5.data(), int(a5.size()));
 
-    uint8_t list[4096];
-    int listLen = net::recvExact(realmd, list, 3);
-    int payload = list[1] | (list[2] << 8);
-    listLen += net::recvExact(realmd, list + 3, payload);
-    log::hex("[auth] realmd-realmlist", list, listLen);
+    // The world session key we install via a8. Content is arbitrary - both channel endpoints are ours
+    // and the WorldKey capture hook reads it back, so the world proxy keys its cipher on exactly this.
+    static const uint8_t kWorldKey[32] = {
+        0x8f,0x3a,0xc1,0x77,0x02,0xe9,0x5b,0xd4,0x16,0xa0,0x6c,0x3e,0xbb,0x91,0x48,0x2f,
+        0x11,0x22,0x33,0x44,0x55,0x66,0x77,0x88,0x99,0xaa,0xbb,0xcc,0xdd,0xee,0xff,0x00,
+    };
 
-    Bytes b1 = toClientRealmlist(list, listLen);
-    if (b1.empty()) {              // fallback: forward the realm list unchanged
-        b1.assign(list, list + listLen);
-        b1[0] = 0xb1;
+    for (;;) {
+        n = recv(client, reinterpret_cast<char*>(buf), sizeof buf, 0);
+        if (n <= 0) { log::line("[auth] azrt: auth socket closed (recv=%d err=%d)", n, WSAGetLastError()); return; }
+
+        switch (buf[0]) {
+        case op::azrt::kKeyAck: {   // the client's a6 (KDF answer): now complete the secure channel
+            log::hex("[auth] <-a6(from client)", buf, n);
+            Bytes a6r = { op::azrt::kKeyAck, 0x00 };
+            net::sendAll(client, a6r.data(), int(a6r.size()));
+            // a7 carries a single flag byte; 0 = proceed (a non-zero body spilled bytes read as opcodes).
+            Bytes a7 = { op::azrt::kSession, 0x00 };
+            net::sendAll(client, a7.data(), int(a7.size()));
+            // a8 = [0xA8][world key big-endian][16]: the client stores the key at session+0x60, advances
+            // the channel to state 5, and answers a9. This is the real handoff the byte-patches only faked.
+            ByteWriter a8w; a8w.u8(op::azrt::kKeyInstall); a8w.bytes(Bytes(kWorldKey, kWorldKey + 32));
+            Bytes a8 = a8w.take();
+            log::hex("[auth] ->a6-reply/a7/a8(key install)", a8.data(), int(a8.size()));
+            net::sendAll(client, a8.data(), int(a8.size()));
+            break;
+        }
+        case op::azrt::kRealmListReq: {   // b0: fill the realm screen so realm-select can proceed
+            log::hex("[auth] <-b0(realm req)", buf, n);
+            Bytes b1 = !realB1.empty() ? realB1 : synthRealmlist();   // real cmangos list
+            log::hex("[auth] ->b1(reply)", b1.data(), int(b1.size()));
+            net::sendAll(client, b1.data(), int(b1.size()));
+            g_realmReady.store(true);   // auth + realm exchange complete: the world handoff may now fire
+            socketprobe::arm();   // catch whatever tears the realmd link down next, with a backtrace
+            break;
+        }
+        case op::azrt::kKeyInstallAck:    // a9: client confirmed the a8 key install
+            log::hex("[auth] <-a9(key install ack)", buf, n);
+            break;
+        default:
+            // Realm-select should emit its ChangeRealm/handoff request here (plaintext); capture it whole.
+            log::hex("[auth] <-post-realm (handoff?)", buf, n);
+            break;
+        }
     }
-    log::hex("[auth] ->b1", b1.data(), int(b1.size()));
-    net::sendAll(client, b1.data(), int(b1.size()));
-    log::line("[auth] realmlist sent -> %s", config::kWorldAddr);
+}
 
-    close();
+void handleSession(SOCKET client) {
+    uint8_t buf[4096];
+    int n = recv(client, reinterpret_cast<char*>(buf), sizeof buf, 0);
+    if (n <= 0 || buf[0] != op::azrt::kSessionOpen) { closesocket(client); return; }
+    log::hex("[auth] <-a0", buf, n);
+
+    // One login: play the AZRT server directly. The client computes its real I while answering our a1
+    // (captured by the identity hook), and azrtServe validates it against cmangos before completing auth
+    // - so no relay pass is needed just to capture I, yet unknown accounts are still rejected.
+    azrtServe(client);
+    closesocket(client);
 }
 
 } // namespace uoa::auth
