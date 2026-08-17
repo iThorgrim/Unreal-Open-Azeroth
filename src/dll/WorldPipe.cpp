@@ -188,6 +188,9 @@ void Pipe::parse() {
             mappedOpcode_ = mapped;
             bodyBuf_.clear();
 
+            // Two bodies are buffered whole and their header deferred until the rebuilt size is known: the
+            // server's char list (reshaped with its key trailer) and the client's char-create (trailing byte
+            // trimmed). Everything else streams straight through.
             xformCharEnum_   = (!fromClient_ && opcode == op::mangos::kSMSG_CHAR_ENUM && mapped >= 0);
             xformCharCreate_ = (fromClient_ && mapped == op::mangos::kCMSG_CHAR_CREATE);
 
