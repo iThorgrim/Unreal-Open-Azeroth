@@ -15,7 +15,7 @@ namespace {
 constexpr int kUserFieldOff = 0x68;
 constexpr int kPassFieldOff = 0x78;
 
-uint8_t     g_hash[20] = {};
+uint8_t     g_hash[20] = {};          // SHA1(user:pass) - matches the cmangos account verifier (hat-2)
 bool        g_ready    = false;
 std::string g_user;
 
@@ -45,7 +45,8 @@ void captureFrom(void* obj) {
     if (!readWideField(obj, kUserFieldOff, user, sizeof user)) return;
     if (!readWideField(obj, kPassFieldOff, pass, sizeof pass)) return;
 
-    // I = SHA1(user ":" pass), on the exact stored (uppercased) bytes the client itself hashes.
+    // I = SHA1(user ":" pass), on the exact stored (uppercased) bytes the client itself hashes. cmangos
+    // stores the account verifier against this, which hat-2 uses to validate the account.
     Sha1 sha;
     sha.update(reinterpret_cast<const uint8_t*>(user), strlen(user));
     sha.update(reinterpret_cast<const uint8_t*>(":"), 1);

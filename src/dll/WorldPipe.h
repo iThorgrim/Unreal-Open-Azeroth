@@ -19,8 +19,9 @@ struct AuthBridge {
 // One direction of the world stream: frames packets, remaps opcodes, re-encrypts, and forwards
 // to `out`. Dropped opcodes (remap returns -1) are suppressed. The first packet of each side is
 // plaintext (the auth handshake); on that packet the pipe rewrites the CMSG_AUTH_SESSION digest or
-// captures the SMSG_AUTH_CHALLENGE seed before forwarding. Bodies pass through unchanged - the client is
-// vanilla-wire, only its opcode numbers are renumbered.
+// captures the SMSG_AUTH_CHALLENGE seed before forwarding. Bodies are otherwise vanilla-wire and pass
+// through unchanged, save two the client shapes differently: SMSG_CHAR_ENUM gains its key trailer and
+// CMSG_CHAR_CREATE carries a trailing byte the vanilla server rejects. Both are buffered whole and rebuilt.
 class Pipe {
 public:
     using Remap = int (*)(int opcode);   // opcode -> opcode, or -1 to drop
@@ -33,6 +34,7 @@ private:
     void bridgePlaintext(uint8_t* pkt, int total, int opcode);   // seed capture / digest rewrite on the pre-crypt packet
     void rewriteAuthSession(uint8_t* pkt, int total);            // recompute the CMSG_AUTH_SESSION digest with cmangos K
     void emitCharEnum();                                         // reshape the buffered char list and forward it
+    void emitCharCreate();                                       // trim the buffered char-create body and forward it
 
     SOCKET       out_;
     int          headerLen_;
@@ -44,15 +46,16 @@ private:
     bool         cryptActive_   = false;
     bool         inBody_        = false;
     bool         forwardBody_   = true;
-    bool         xformCharEnum_ = false;   // current body is SMSG_CHAR_ENUM, buffered whole for reshaping
+    bool         xformCharEnum_   = false; // current body is SMSG_CHAR_ENUM, buffered whole for reshaping
+    bool         xformCharCreate_ = false; // current body is CMSG_CHAR_CREATE, buffered whole for trimming
     int          bodyRemaining_ = 0;
     int          logOpcode_     = 0;       // original opcode of the packet whose body we are accumulating
-    int          mappedOpcode_  = 0;       // renumbered opcode to stamp on a reshaped char-enum header
+    int          mappedOpcode_  = 0;       // renumbered opcode to stamp on a rebuilt body's header
     HeaderCipher recv_;
     HeaderCipher send_;
     std::vector<uint8_t> buf_;
     std::vector<uint8_t> bodyBuf_;       // capped copy of the current body, for the diagnostic hex dump
-    std::vector<uint8_t> charEnumBody_;  // full SMSG_CHAR_ENUM body accumulated across reads for reshaping
+    std::vector<uint8_t> xformBody_;     // full body accumulated across reads for a reshape/trim transform
 };
 
 } // namespace uoa::world

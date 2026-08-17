@@ -10,7 +10,7 @@ namespace uoa::identity {
 
 void               captureFrom(void* authObject);   // read user/pass, compute and store I
 bool               ready();
-const uint8_t*     hash();                            // 20-byte identity digest, or nullptr
+const uint8_t*     hash();                            // SHA1(user:pass), or nullptr - matches the cmangos account
 const std::string& user();                            // captured username (safe to log)
 
 } // namespace uoa::identity

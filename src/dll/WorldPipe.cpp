@@ -22,10 +22,32 @@ namespace {
 
 constexpr int kTrailerLen = 32;
 
+// The client parses the vanilla 1.12 SMSG_CHAR_ENUM body verbatim and then requires a mandatory 32-byte key
+// trailer; the real server for this client appends that trailer to an otherwise untouched vanilla body, so
+// we mirror it exactly: forward the body as received and append the char-enum protected-region key. Field
+// layout is therefore whatever the backend sent, which is already the wire form the client reads: each
+// equipment slot is displayId + inventoryType with no per-slot enchant, 20 slots (19 worn + first bag). We
+// re-keyed that region to ours (azct::install), so the client decrypts and CRC-validates the trailer with
+// azct::kSlot1Key, and the empty-list case (count 0) still needs the trailer present or the client reports
+// the list incomplete.
 Bytes reshapeCharEnum(const uint8_t* body, int len) {
     ByteWriter w;
     w.bytes(body, size_t(len));
     w.bytes(azct::kSlot1Key, kTrailerLen);
+    return w.take();
+}
+
+// Trim a CMSG_CHAR_CREATE body to its exact vanilla 1.12 length. The client appends a trailing byte the
+// vanilla server does not read, which makes the server's packet validator reject the size; the vanilla body
+// is the name (a null-terminated string) followed by nine appearance/outfit bytes, so we keep name + 9 and
+// drop anything past it.
+Bytes trimCharCreate(const uint8_t* body, int len) {
+    ByteReader r(body, size_t(len));
+    r.cstr();                                              // name, read through its terminator
+    size_t vanilla = (size_t(len) - r.remaining()) + 9;   // + race, class, gender, skin, face, hairStyle, hairColor, facialHair, outfitId
+    if (vanilla > size_t(len)) vanilla = size_t(len);     // a short body is forwarded as-is, never grown
+    ByteWriter w;
+    w.bytes(body, vanilla);
     return w.take();
 }
 
@@ -166,20 +188,20 @@ void Pipe::parse() {
             mappedOpcode_ = mapped;
             bodyBuf_.clear();
 
-            // The char list is the one server->client body whose bytes change shape, so it is buffered whole
-            // and its header is deferred until the reshaped size is known; everything else streams straight.
-            xformCharEnum_ = (!fromClient_ && opcode == op::mangos::kSMSG_CHAR_ENUM && mapped >= 0);
+            xformCharEnum_   = (!fromClient_ && opcode == op::mangos::kSMSG_CHAR_ENUM && mapped >= 0);
+            xformCharCreate_ = (fromClient_ && mapped == op::mangos::kCMSG_CHAR_CREATE);
 
             char lbl[64], mlbl[64];
             opLabel(lbl, sizeof lbl, opcode, fromClient_);
             if (mapped < 0) {
                 log::line("%s op=%s size=%d -> drop (unmapped client opcode)", tag_, lbl, size);
                 forwardBody_ = false;
-            } else if (xformCharEnum_) {
-                log::line("%s op=%s size=%d -> %s (reshape)", tag_, lbl, size,
-                          opLabel(mlbl, sizeof mlbl, mapped, false));
-                forwardBody_ = false;          // header follows the reshaped body, once its size is known
-                charEnumBody_.clear();
+            } else if (xformCharEnum_ || xformCharCreate_) {
+                log::line("%s op=%s size=%d -> %s (%s)", tag_, lbl, size,
+                          opLabel(mlbl, sizeof mlbl, mapped, false),
+                          xformCharEnum_ ? "reshape" : "trim");
+                forwardBody_ = false;          // header follows the rebuilt body, once its size is known
+                xformBody_.clear();
             } else {
                 if (mapped != opcode) log::line("%s op=%s size=%d -> %s", tag_, lbl, size,
                                                 opLabel(mlbl, sizeof mlbl, mapped, false));
@@ -194,8 +216,8 @@ void Pipe::parse() {
 
         int take = (int)buf_.size();
         if (take > bodyRemaining_) take = bodyRemaining_;
-        if (xformCharEnum_) {
-            if (take > 0) charEnumBody_.insert(charEnumBody_.end(), buf_.begin(), buf_.begin() + take);
+        if (xformCharEnum_ || xformCharCreate_) {
+            if (take > 0) xformBody_.insert(xformBody_.end(), buf_.begin(), buf_.begin() + take);
         } else {
             if (forwardBody_ && take > 0) net::sendAll(out_, buf_.data(), take);
 
@@ -212,6 +234,8 @@ void Pipe::parse() {
 
         if (xformCharEnum_) {
             emitCharEnum();
+        } else if (xformCharCreate_) {
+            emitCharCreate();
         } else {
             char lbl[64], label[96];
             snprintf(label, sizeof label, "%s body %s", tag_, opLabel(lbl, sizeof lbl, logOpcode_, fromClient_));
@@ -226,7 +250,7 @@ void Pipe::parse() {
 // carrying the new size and the renumbered char-enum opcode. Only the header is header-crypted; the body is
 // plaintext on the wire, so it is written straight after.
 void Pipe::emitCharEnum() {
-    Bytes out = reshapeCharEnum(charEnumBody_.data(), (int)charEnumBody_.size());
+    Bytes out = reshapeCharEnum(xformBody_.data(), (int)xformBody_.size());
     int newSize = (int)out.size() + bodyAdjust_;
 
     uint8_t header[6];
@@ -240,9 +264,33 @@ void Pipe::emitCharEnum() {
 
     char lbl[96];
     snprintf(lbl, sizeof lbl, "%s SMSG_CHAR_ENUM reshaped %d -> %d body bytes",
-             tag_, (int)charEnumBody_.size(), (int)out.size());
+             tag_, (int)xformBody_.size(), (int)out.size());
     log::hex(lbl, out.data(), (int)out.size() < kBodyLogCap ? (int)out.size() : kBodyLogCap);
     xformCharEnum_ = false;
+}
+
+// Trim the fully buffered CMSG_CHAR_CREATE body to its exact vanilla length and forward it under a header
+// carrying the new size and the renumbered opcode. The client appends a trailing byte the vanilla server
+// rejects; dropping it lets the create parse cleanly so the server's success reply reaches the client. The
+// client->server header is six bytes (a four-byte opcode), so the upper opcode bytes are zeroed.
+void Pipe::emitCharCreate() {
+    Bytes out = trimCharCreate(xformBody_.data(), (int)xformBody_.size());
+    int newSize = (int)out.size() + bodyAdjust_;
+
+    uint8_t header[6] = {0};
+    header[0] = (uint8_t)((newSize >> 8) & 0xff);
+    header[1] = (uint8_t)(newSize & 0xff);
+    header[2] = (uint8_t)(mappedOpcode_ & 0xff);
+    header[3] = (uint8_t)((mappedOpcode_ >> 8) & 0xff);
+    send_.encrypt(header, headerLen_);
+    net::sendAll(out_, header, headerLen_);
+    net::sendAll(out_, out.data(), (int)out.size());
+
+    char lbl[96];
+    snprintf(lbl, sizeof lbl, "%s CMSG_CHAR_CREATE trimmed %d -> %d body bytes",
+             tag_, (int)xformBody_.size(), (int)out.size());
+    log::hex(lbl, out.data(), (int)out.size() < kBodyLogCap ? (int)out.size() : kBodyLogCap);
+    xformCharCreate_ = false;
 }
 
 } // namespace uoa::world

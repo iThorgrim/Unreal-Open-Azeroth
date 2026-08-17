@@ -97,24 +97,16 @@ void azrtChallenge(const uint8_t identity[20], AzrtServer& s) {
     v.getBytesBE(s.vBytes, 32);
     B.getBytesLE(s.Bwire, 32);
     N.getBytesLE(s.Nwire, 32);
+
 }
 
-void azrtFinish(const AzrtServer& s, const uint8_t Awire[32], const uint8_t M1[20],
-                uint8_t outM2[20], uint8_t outK[40]) {
-    BigNum N; N.setBytesBE(kNCustom, 32);
-    BigNum A; A.setBytesLE(Awire, 32);
-    BigNum B; B.setBytesLE(s.Bwire, 32);
-    BigNum v; v.setBytesBE(s.vBytes, 32);
-    BigNum b; b.setBytesBE(s.bBytes, 32);
-
-    BigNum u = calcU(A, B);
-    BigNum S = BigNum::modExp(BigNum::modMul(A, BigNum::modExp(v, u, N), N), b, N);
-
-    uint8_t K[40]; interleaveK(S, K);
-    if (outK) memcpy(outK, K, 40);
-
+void azrtFinish(const uint8_t Awire[32], const uint8_t M1[20], const uint8_t clientK[40], uint8_t outM2[20]) {
+    // The client's proof-verify checks M2 = SHA1(A, M1, K), each value hashed as a little-endian,
+    // minimal-length bignum. K is the session key the client itself derived, captured from its SRP state, so
+    // this reproduces the client's digest exactly - no need to match how it derived K from the challenge.
+    BigNum A;    A.setBytesLE(Awire, 32);
     BigNum M1bn; M1bn.setBytesLE(M1, 20);
-    BigNum Kbn;  Kbn.setBytesLE(K, 40);
+    BigNum Kbn;  Kbn.setBytesLE(clientK, 40);
     Sha1 sha; updBN(sha, A); updBN(sha, M1bn); updBN(sha, Kbn);
     sha.finish(outM2);
 }
