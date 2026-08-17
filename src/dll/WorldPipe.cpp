@@ -5,6 +5,7 @@
 #include "Sha1.h"
 #include "AuthProxy.h"
 #include "WorldKey.h"
+#include "AzctCanary.h"
 #include "Net.h"
 #include "Log.h"
 
@@ -16,6 +17,54 @@ namespace uoa::world {
 
 // Cap the diagnostic body dump so a large packet (world state, char list) stays readable in the log.
 static constexpr int kBodyLogCap = 128;
+
+namespace {
+
+// The client's char record carries the vanilla 1.12 fields verbatim except that each equipment slot omits
+// the per-slot enchant, and the whole list is followed by a mandatory 32-byte key trailer. The slot count
+// is fixed by the client (19 worn + the first bag).
+constexpr int kEquipmentSlots = 20;
+constexpr int kTrailerLen     = 32;
+
+void copyU64(ByteReader& r, ByteWriter& w) { w.u32(r.u32()); w.u32(r.u32()); }
+
+// Reshape a vanilla 1.12 SMSG_CHAR_ENUM body into the form the client parses:
+// [u8 count][count x record][32-byte trailer]. Every field is copied straight through except the equipment
+// enchant, which the client does not read. The trailer is the char-enum protected-region key; we re-keyed
+// that region to ours (azct::install), so the client decrypts and CRC-validates it with azct::kSlot1Key and
+// the empty-list case (count 0) still requires the trailer to be present or it reports the list incomplete.
+Bytes reshapeCharEnum(const uint8_t* body, int len) {
+    ByteReader r(body, size_t(len));
+    ByteWriter w;
+    uint8_t count = r.u8();
+    w.u8(count);
+    for (uint8_t i = 0; i < count; ++i) {
+        copyU64(r, w);                                            // guid
+        w.cstr(r.cstr());                                         // name
+        w.u8(r.u8()); w.u8(r.u8()); w.u8(r.u8());                 // race, class, gender
+        w.u8(r.u8()); w.u8(r.u8()); w.u8(r.u8()); w.u8(r.u8());   // skin, face, hairStyle, hairColor
+        w.u8(r.u8());                                            // facialHair
+        w.u8(r.u8());                                            // level
+        w.u32(r.u32());                                          // zone
+        w.u32(r.u32());                                          // map
+        w.u32(r.u32()); w.u32(r.u32()); w.u32(r.u32());          // position x, y, z
+        w.u32(r.u32());                                          // guildId
+        w.u32(r.u32());                                          // charFlags
+        w.u8(r.u8());                                            // firstLogin
+        w.u32(r.u32());                                          // petDisplayId
+        w.u32(r.u32());                                          // petLevel
+        w.u32(r.u32());                                          // petFamily
+        for (int s = 0; s < kEquipmentSlots; ++s) {
+            w.u32(r.u32());                                      // equipment displayId
+            w.u8(r.u8());                                        // equipment inventoryType
+            r.u32();                                            // enchant: in the vanilla record, unread here
+        }
+    }
+    w.bytes(azct::kSlot1Key, kTrailerLen);
+    return w.take();
+}
+
+} // namespace
 
 Pipe::Pipe(SOCKET out, int headerLen, Remap remap, const char* tag, AuthBridge* bridge)
     : out_(out), headerLen_(headerLen), bodyAdjust_(headerLen - 2),
@@ -149,13 +198,23 @@ void Pipe::parse() {
             if (bodyRemaining_ < 0) bodyRemaining_ = 0;
             inBody_ = true;
             logOpcode_ = opcode;
+            mappedOpcode_ = mapped;
             bodyBuf_.clear();
+
+            // The char list is the one server->client body whose bytes change shape, so it is buffered whole
+            // and its header is deferred until the reshaped size is known; everything else streams straight.
+            xformCharEnum_ = (!fromClient_ && opcode == op::mangos::kSMSG_CHAR_ENUM && mapped >= 0);
 
             char lbl[64], mlbl[64];
             opLabel(lbl, sizeof lbl, opcode, fromClient_);
             if (mapped < 0) {
                 log::line("%s op=%s size=%d -> drop (unmapped client opcode)", tag_, lbl, size);
                 forwardBody_ = false;
+            } else if (xformCharEnum_) {
+                log::line("%s op=%s size=%d -> %s (reshape)", tag_, lbl, size,
+                          opLabel(mlbl, sizeof mlbl, mapped, false));
+                forwardBody_ = false;          // header follows the reshaped body, once its size is known
+                charEnumBody_.clear();
             } else {
                 if (mapped != opcode) log::line("%s op=%s size=%d -> %s", tag_, lbl, size,
                                                 opLabel(mlbl, sizeof mlbl, mapped, false));
@@ -170,24 +229,55 @@ void Pipe::parse() {
 
         int take = (int)buf_.size();
         if (take > bodyRemaining_) take = bodyRemaining_;
-        if (forwardBody_ && take > 0) net::sendAll(out_, buf_.data(), take);
+        if (xformCharEnum_) {
+            if (take > 0) charEnumBody_.insert(charEnumBody_.end(), buf_.begin(), buf_.begin() + take);
+        } else {
+            if (forwardBody_ && take > 0) net::sendAll(out_, buf_.data(), take);
 
-        // Keep a capped copy of the body for the diagnostic hex dump.
-        int keep = take;
-        if ((int)bodyBuf_.size() + keep > kBodyLogCap)
-            keep = kBodyLogCap - (int)bodyBuf_.size();
-        if (keep > 0) bodyBuf_.insert(bodyBuf_.end(), buf_.begin(), buf_.begin() + keep);
+            // Keep a capped copy of the body for the diagnostic hex dump.
+            int keep = take;
+            if ((int)bodyBuf_.size() + keep > kBodyLogCap)
+                keep = kBodyLogCap - (int)bodyBuf_.size();
+            if (keep > 0) bodyBuf_.insert(bodyBuf_.end(), buf_.begin(), buf_.begin() + keep);
+        }
 
         buf_.erase(buf_.begin(), buf_.begin() + take);
         bodyRemaining_ -= take;
         if (bodyRemaining_ > 0) return;
 
-        char lbl[64], label[96];
-        snprintf(label, sizeof label, "%s body %s", tag_, opLabel(lbl, sizeof lbl, logOpcode_, fromClient_));
-        log::hex(label, bodyBuf_.data(), (int)bodyBuf_.size());
+        if (xformCharEnum_) {
+            emitCharEnum();
+        } else {
+            char lbl[64], label[96];
+            snprintf(label, sizeof label, "%s body %s", tag_, opLabel(lbl, sizeof lbl, logOpcode_, fromClient_));
+            log::hex(label, bodyBuf_.data(), (int)bodyBuf_.size());
+        }
 
         inBody_ = false;
     }
+}
+
+// Reshape the fully buffered vanilla char list into the client's record layout, then send it under a header
+// carrying the new size and the renumbered char-enum opcode. Only the header is header-crypted; the body is
+// plaintext on the wire, so it is written straight after.
+void Pipe::emitCharEnum() {
+    Bytes out = reshapeCharEnum(charEnumBody_.data(), (int)charEnumBody_.size());
+    int newSize = (int)out.size() + bodyAdjust_;
+
+    uint8_t header[6];
+    header[0] = (uint8_t)((newSize >> 8) & 0xff);
+    header[1] = (uint8_t)(newSize & 0xff);
+    header[2] = (uint8_t)(mappedOpcode_ & 0xff);
+    header[3] = (uint8_t)((mappedOpcode_ >> 8) & 0xff);
+    send_.encrypt(header, headerLen_);
+    net::sendAll(out_, header, headerLen_);
+    net::sendAll(out_, out.data(), (int)out.size());
+
+    char lbl[96];
+    snprintf(lbl, sizeof lbl, "%s SMSG_CHAR_ENUM reshaped %d -> %d body bytes",
+             tag_, (int)charEnumBody_.size(), (int)out.size());
+    log::hex(lbl, out.data(), (int)out.size() < kBodyLogCap ? (int)out.size() : kBodyLogCap);
+    xformCharEnum_ = false;
 }
 
 } // namespace uoa::world

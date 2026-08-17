@@ -32,6 +32,7 @@ private:
     void parse();
     void bridgePlaintext(uint8_t* pkt, int total, int opcode);   // seed capture / digest rewrite on the pre-crypt packet
     void rewriteAuthSession(uint8_t* pkt, int total);            // recompute the CMSG_AUTH_SESSION digest with cmangos K
+    void emitCharEnum();                                         // reshape the buffered char list and forward it
 
     SOCKET       out_;
     int          headerLen_;
@@ -43,12 +44,15 @@ private:
     bool         cryptActive_   = false;
     bool         inBody_        = false;
     bool         forwardBody_   = true;
+    bool         xformCharEnum_ = false;   // current body is SMSG_CHAR_ENUM, buffered whole for reshaping
     int          bodyRemaining_ = 0;
     int          logOpcode_     = 0;       // original opcode of the packet whose body we are accumulating
+    int          mappedOpcode_  = 0;       // renumbered opcode to stamp on a reshaped char-enum header
     HeaderCipher recv_;
     HeaderCipher send_;
     std::vector<uint8_t> buf_;
-    std::vector<uint8_t> bodyBuf_;   // capped copy of the current body, for the diagnostic hex dump
+    std::vector<uint8_t> bodyBuf_;       // capped copy of the current body, for the diagnostic hex dump
+    std::vector<uint8_t> charEnumBody_;  // full SMSG_CHAR_ENUM body accumulated across reads for reshaping
 };
 
 } // namespace uoa::world

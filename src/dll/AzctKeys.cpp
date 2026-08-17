@@ -26,7 +26,10 @@ void patchCanary(uint32_t rva, const uint8_t* enc, uint32_t len, const char* wha
 
 void install() {
     patchCanary(kSlot0Rva, kSlot0Enc, kSlot0Len, "slot0 a1/integrity");
-    // slot1 (CHAR_ENUM) is patched when the char-list push is wired; the header already carries it.
+    // The char-enum handler protects its finalizer region under a wire-delivered AES key: the SMSG_CHAR_ENUM
+    // trailer is that key, and the client decrypts + CRC-checks this region with it before running the
+    // finalizer. Re-keying it to ours lets the proxy send our key as the trailer instead of the vendor's.
+    patchCanary(kSlot1Rva, kSlot1Enc, kSlot1Len, "slot1 CHAR_ENUM");
 }
 
 } // namespace uoa::azct
