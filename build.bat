@@ -1,6 +1,8 @@
 @echo off
 REM Build inside "x64 Native Tools Command Prompt for VS".
 setlocal
+REM Remove previous object files from current directory
+del /Q *.obj 2>nul
 set CFLAGS=/nologo /O2 /std:c++17 /EHsc /D_CRT_SECURE_NO_WARNINGS
 set MHINC=/I third_party\minhook\include
 set MHSRC=third_party\minhook\src\buffer.c third_party\minhook\src\hook.c third_party\minhook\src\trampoline.c third_party\minhook\src\hde\hde64.c
