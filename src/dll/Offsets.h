@@ -6,19 +6,19 @@
 
 namespace uoa::off {
 
-inline constexpr uint32_t kReadiness = 0x4129310;
-inline constexpr uint32_t kDiscGate = 0x34e3e37;
-inline constexpr uint32_t kFlagJne = 0x412c192;
-inline constexpr uint32_t kKdf = 0x41260a0;
-inline constexpr uint32_t kA3Handler = 0x412be7d;
-inline constexpr uint32_t kA1Handler = 0x4129e50;
-inline constexpr uint32_t kAzctValidator = 0x41251a0;
-inline constexpr uint32_t kTeardown = 0x474ef20;
-inline constexpr uint32_t kFinalize = 0x5f695c0;
-inline constexpr uint32_t kLoginToWorld = 0x4129530;
-inline constexpr uint32_t kMangosPump = 0x4802840;
-inline constexpr uint32_t kFNameCtor = 0x12aeca0;
-inline constexpr uint32_t kGetSubsystem = 0x458e2a0;
-inline constexpr uint32_t kSubsysCollection = 0x815f868;
+inline constexpr uint32_t kReadiness = 0x4129530;   // realm-select readiness predicate (patched -> mov al,1; ret)
+inline constexpr uint32_t kDiscGate = 0x34e4037;   // realmd disconnect gate (jne -> jmp)
+inline constexpr uint32_t kFlagJne = 0x412c3b2;   // a6/a7 flag jne (NOP'd -> force flag==0 path)
+inline constexpr uint32_t kTeardown = 0x4731cd0;   // per-frame world-conn teardown (patched -> ret)
+inline constexpr uint32_t kKdf = 0x41262c0;   // AZ-TICKET-v1 KDF (TicketProbe fixes its session fields)
+inline constexpr uint32_t kFinalize = 0x5f6eb40;   // digest finalize (ProofBridge overwrites its output)
+inline constexpr uint32_t kA3Handler = 0x412c09d;   // opcode-0xA3 handler
+inline constexpr uint32_t kA1Handler = 0x412a070;   // opcode-0xA1 SRP-challenge handler (AuthProbe hooks it)
+inline constexpr uint32_t kAzctValidator = 0x41253c0;   // AZCT slot validator (AES-CTR decrypt + CRC)
+inline constexpr uint32_t kLoginToWorld = 0x4129750;   // native world-login entry: LoginToWorld(subsystem, nameFString, addrFString)
+inline constexpr uint32_t kMangosPump = 0x4837b90;   // native login pump; inline operands yield the subsystem accessor, FName ctor, collection global
+inline constexpr uint32_t kFNameCtor = 0x12aed80;
+inline constexpr uint32_t kGetSubsystem = 0x458e0f0;
+inline constexpr uint32_t kSubsysCollection = 0x8166868;
 
 } // namespace uoa::off
