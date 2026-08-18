@@ -66,6 +66,16 @@ inline constexpr int kSMSG_SPELL_GO                = 0x132;
 inline constexpr int kSMSG_SPLINE_MOVE_FIRST       = 0x304;    // contiguous spline-move state block, 0x304..0x30E
 inline constexpr int kSMSG_SPLINE_MOVE_LAST        = 0x30E;
 inline constexpr int kSMSG_SPLINE_MOVE_ROOT        = 0x31A;    // numbered apart from the block
+
+// server->client the client has a live handler for. Everything else lands on an inert stub, so it is
+// dropped rather than forwarded (a stub can still perturb the world-entry state machine).
+inline constexpr int kSMSG_MESSAGECHAT                = 0x096;  // 150  MOTD / chat
+inline constexpr int kSMSG_CHARACTER_LOGIN_FAILED     = 0x041;  // 65
+inline constexpr int kSMSG_NAME_QUERY_RESPONSE        = 0x051;  // 81
+inline constexpr int kSMSG_ITEM_QUERY_SINGLE_RESPONSE = 0x058;  // 88
+inline constexpr int kSMSG_GAMEOBJECT_QUERY_RESPONSE  = 0x05F;  // 95
+inline constexpr int kSMSG_CREATURE_QUERY_RESPONSE    = 0x061;  // 97
+inline constexpr int kSMSG_CHAR_RENAME                = 0x2C8;  // 712
 }
 
 // ---- client (UE) world opcodes ----
@@ -89,11 +99,22 @@ inline constexpr int kQueryByGuid   = 0x4FB;   // C->S -> name/creature/GO query
 inline constexpr int kCharEnumResp  = 0x478;   // S->C <- SMSG_CHAR_ENUM
 inline constexpr int kCharCreateResp = 0x232;  // S->C <- SMSG_CHAR_CREATE
 inline constexpr int kCharDeleteResp = 0x233;  // S->C <- SMSG_CHAR_DELETE
+inline constexpr int kCharRenameResp = 0x3C3;  // S->C <- SMSG_CHAR_RENAME
+inline constexpr int kLoginFailed    = 0x216;  // S->C <- SMSG_CHARACTER_LOGIN_FAILED
+inline constexpr int kAzctProbe      = 0x1A4;  // S->C AZCT probe; the client accepts it only when empty
 inline constexpr int kCompressedUpdate = 0x1FC; // S->C <- SMSG_(COMPRESSED_)UPDATE_OBJECT; the live update handler
                                                 // (the vanilla 0x1F6 slot is an inert stub, so the pawn never spawns)
 inline constexpr int kWorldAccess      = 0x527; // S->C injected before LOGIN_VERIFY_WORLD to lift the world gate
                                                 // (u8 != 0 = granted, u32 = 0 = no countdown); 0x236 alone does not
                                                 // start the map/NPC stream
+inline constexpr int kMapVerify        = 0x0C5; // S->C <- SMSG_LOGIN_VERIFY_WORLD. This build wires the map-verify
+                                                // handler (reads mapId, validates the map, flips world-ready -> 2,
+                                                // which drives possession) at opcode 0x0C5; the 0x236 slot is an
+                                                // unregistered stub here (that slot needs the Emberveil client patch)
+inline constexpr int kMapReadyPawn     = 0x102; // S->C synthesized after 0x0C5: the client requests it (via 0x103)
+                                                // to spawn/position its own pawn. Body = u32 actor id (player guid-low);
+                                                // the handler applies a default transform. 0x0C5 only validates the map
+                                                // and does not place the pawn (welder's patched 0x236 did both inline)
 }
 
 } // namespace uoa::op

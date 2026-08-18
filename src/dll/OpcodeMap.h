@@ -34,38 +34,42 @@ inline int mapClientOpcode(int clientOpcode)
     return clientOpcode;            // assume a shared vanilla opcode
 }
 
-// Maps a mangos 1.12 opcode to the client's world opcode, or -1 to drop it. Most server->client opcodes
-// share their vanilla numbers, but the char-select flow is renumbered (SMSG_CHAR_ENUM 0x3B -> 0x478, etc.)
-// and the world stream needs three corrections the x64 client depends on:
-//   - the object stream only reaches a live handler at 0x1FC; the vanilla 0x1F6 slot is an inert stub, so an
-//     unrenumbered compressed update is silently discarded and the pawn never spawns;
-//   - the client owns movement (UE-replicated), so the classic spline/spell bodies are dropped rather than
-//     applied against the wrong actor fields (their coordinates otherwise land in unrelated slots);
-//   - uncompressed SMSG_UPDATE_OBJECT has no live client handler and must be re-emitted through 0x1FC as a
-//     compressed frame, which needs deflate; until that path exists it is dropped, so single-object deltas
-//     are deferred while the initial (already compressed) scene create still spawns the pawn.
+// Maps a mangos 1.12 opcode to the client's world opcode, or -1 to drop it. The char-select flow is
+// renumbered (SMSG_CHAR_ENUM 0x3B -> 0x478, etc.) and the compressed object stream only reaches a live
+// handler at 0x1FC (the vanilla 0x1F6 slot is an inert stub, so an unrenumbered update never spawns the
+// pawn). Everything else is forwarded under its vanilla number: the reference server suppresses the
+// post-login init/world-state burst, but that server drives possession natively; against vmangos the
+// client may in fact need that burst to reach world-ready, so we stop dropping it and let it through.
+// Only two classes are still dropped, because forwarding them raw actively corrupts state rather than
+// merely hitting a stub:
+//   - the classic movement/spell bodies (SMSG_MONSTER_MOVE and friends), which arrive continuously and
+//     whose coordinates land in unrelated actor fields on the UE-replicated x64 client;
+//   - uncompressed SMSG_UPDATE_OBJECT, which has no live raw handler and would need deflate to re-emit as
+//     a 0x1FC frame; the initial (already compressed) scene create still spawns the pawn without it.
 inline int mapServerOpcode(int serverOpcode)
 {
     switch (serverOpcode) {
-        case op::mangos::kSMSG_MONSTER_MOVE:
-        case op::mangos::kSMSG_MONSTER_MOVE_TRANSPORT:
-        case op::mangos::kSMSG_SPELL_START:
-        case op::mangos::kSMSG_SPELL_GO:
-        case op::mangos::kSMSG_SPLINE_MOVE_ROOT:
-        case op::mangos::kSMSG_UPDATE_OBJECT:
+        case op::mangos::kSMSG_COMPRESSED_UPDATE_OBJECT: return op::client::kCompressedUpdate; // 0x1FC
+        case op::mangos::kSMSG_CHAR_ENUM:              return op::client::kCharEnumResp;   // 0x478
+        case op::mangos::kSMSG_CHAR_CREATE:            return op::client::kCharCreateResp; // 0x232
+        case op::mangos::kSMSG_CHAR_DELETE:            return op::client::kCharDeleteResp; // 0x233
+        case op::mangos::kSMSG_CHAR_RENAME:            return op::client::kCharRenameResp; // 0x3C3
+        case op::mangos::kSMSG_CHARACTER_LOGIN_FAILED: return op::client::kLoginFailed;    // 0x216
+        case op::mangos::kSMSG_LOGIN_VERIFY_WORLD:     return op::client::kMapVerify;      // 0x0C5 (this build's map-verify slot; 0x236 is an unregistered stub)
+
+        case op::mangos::kSMSG_UPDATE_OBJECT:           // 0x0A9 (needs deflate into 0x1FC)
+        case op::mangos::kSMSG_MONSTER_MOVE:            // 0x0DD
+        case op::mangos::kSMSG_MONSTER_MOVE_TRANSPORT:  // 0x2AE
+        case op::mangos::kSMSG_SPELL_START:             // 0x131
+        case op::mangos::kSMSG_SPELL_GO:                // 0x132
+        case op::mangos::kSMSG_SPLINE_MOVE_ROOT:        // 0x31A
             return -1;
+        default: break;
     }
     if (serverOpcode >= op::mangos::kSMSG_SPLINE_MOVE_FIRST &&
-        serverOpcode <= op::mangos::kSMSG_SPLINE_MOVE_LAST)
-        return -1;
+        serverOpcode <= op::mangos::kSMSG_SPLINE_MOVE_LAST) return -1;   // 0x304..0x30E
 
-    switch (serverOpcode) {
-        case op::mangos::kSMSG_COMPRESSED_UPDATE_OBJECT: return op::client::kCompressedUpdate; // 0x1FC
-        case op::mangos::kSMSG_CHAR_ENUM:   return op::client::kCharEnumResp;     // 0x478
-        case op::mangos::kSMSG_CHAR_CREATE: return op::client::kCharCreateResp;   // 0x232
-        case op::mangos::kSMSG_CHAR_DELETE: return op::client::kCharDeleteResp;   // 0x233
-    }
-    return serverOpcode;
+    return serverOpcode;   // forward under the vanilla number
 }
 
 } // namespace uoa::world
