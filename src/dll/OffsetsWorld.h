@@ -8,18 +8,18 @@
 namespace uoa::off::world {
 
 // code
-inline constexpr uint32_t kWorldStateSetter = 0x4971d20;   // SetWorldState(this,newState): writes byte[this+0x646]; newState==2 latches OnReady + sends world-ready notify + broadcasts (possession + UI trigger). mov byte[rcx+0x646],dl at 0x496C689 anchors it
-inline constexpr uint32_t kWorldStateTeardown = 0x4971e80;   // resets byte[this+0x646] to 0 on the quit-cleanup path
-inline constexpr uint32_t kMapVerify = 0x4956950;   // handler for world opcode 0x0C5: reads u32 mapId, validates the map, at 0x495177D does mov dl,2 ; call kWorldStateSetter (the only site that sets world-ready=2)
-inline constexpr uint32_t kWorldDispatcher = 0x4965020;   // world packet dispatcher: rdi=session, esi=opcode, r14=reader; hash-lookup then calls the invoker
-inline constexpr uint32_t kWorldInvoker = 0x49655d0;   // reads table[opcode] at [session+opcode*24+0x6D0], compares to the stub, jmp handler. Contains mov eax,0x528 (max opcode) and the +0x6d0 disp
-inline constexpr uint32_t kRegisterHandler = 0x4963ae0;   // Register(session,opcode,&{handlerPtr,adj,extra}): movups [session+opcode*24+0x6D0],xmm0 then movsd [..+0x6E0],xmm1. Every handler registration funnels through it
-inline constexpr uint32_t kAuthPhaseRegistrar = 0x4963b10;   // registers the login-phase handlers: lea rax,[rdi+0x6d0], references the default stub 0x10EAF60
-inline constexpr uint32_t kMapPawnHandler = 0x495b7e0;   // handler for world opcode 0x102 (synthesized pawn-spawn): reads a u32 actor id, applies a default transform to the actor
-inline constexpr uint32_t kWorldAccessHandler = 0x495cfd0;   // handler for world opcode 0x527: reads access(u8)->[session+0x8348], time(u32)->[session+0x834C], gates a world-load event on the global at [0x815F880]
-inline constexpr uint32_t kUpdateParser = 0x4858880;   // parses the inflated update blocks (polymorphic, call [rax+0x180])
-inline constexpr uint32_t kAuthResponseHandler = 0x4952070;   // handler for world opcode 0x1EE (used as an ABI witness)
-inline constexpr uint32_t kCompressedUpdateHandler = 0x49532b0;   // handler for world opcode 0x1FC (compressed update; creates objects). Calls the update parser
+inline constexpr uint32_t kWorldStateSetter = 0x4971ba0;   // SetWorldState(this,newState): writes byte[this+0x646]; newState==2 latches OnReady + sends world-ready notify + broadcasts (possession + UI trigger). mov byte[rcx+0x646],dl at 0x496C689 anchors it
+inline constexpr uint32_t kWorldStateTeardown = 0x4971d00;   // resets byte[this+0x646] to 0 on the quit-cleanup path
+inline constexpr uint32_t kMapVerify = 0x49567d0;   // handler for world opcode 0x0C5: reads u32 mapId, validates the map, at 0x495177D does mov dl,2 ; call kWorldStateSetter (the only site that sets world-ready=2)
+inline constexpr uint32_t kWorldDispatcher = 0x4964ea0;   // world packet dispatcher: rdi=session, esi=opcode, r14=reader; hash-lookup then calls the invoker
+inline constexpr uint32_t kWorldInvoker = 0x4965450;   // reads table[opcode] at [session+opcode*24+0x6D0], compares to the stub, jmp handler. Contains mov eax,0x528 (max opcode) and the +0x6d0 disp
+inline constexpr uint32_t kRegisterHandler = 0x4963960;   // Register(session,opcode,&{handlerPtr,adj,extra}): movups [session+opcode*24+0x6D0],xmm0 then movsd [..+0x6E0],xmm1. Every handler registration funnels through it
+inline constexpr uint32_t kAuthPhaseRegistrar = 0x4963990;   // registers the login-phase handlers: lea rax,[rdi+0x6d0], references the default stub 0x10EAF60
+inline constexpr uint32_t kMapPawnHandler = 0x495b660;   // handler for world opcode 0x102 (synthesized pawn-spawn): reads a u32 actor id, applies a default transform to the actor
+inline constexpr uint32_t kWorldAccessHandler = 0x495ce50;   // handler for world opcode 0x527: reads access(u8)->[session+0x8348], time(u32)->[session+0x834C], gates a world-load event on the global at [0x815F880]
+inline constexpr uint32_t kUpdateParser = 0x4858700;   // parses the inflated update blocks (polymorphic, call [rax+0x180])
+inline constexpr uint32_t kAuthResponseHandler = 0x4951ef0;   // handler for world opcode 0x1EE (used as an ABI witness)
+inline constexpr uint32_t kCompressedUpdateHandler = 0x4953130;   // handler for world opcode 0x1FC (compressed update; creates objects). Calls the update parser
 
 // data globals
 inline constexpr uint32_t kFNamePool = 0x7ed6180;   // FNamePool / GNames

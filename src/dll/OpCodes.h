@@ -58,6 +58,8 @@ inline constexpr int kSMSG_AUTH_RESPONSE  = 0x1EE;   // server->client: first he
 // stream through one renumbered handler, so these are remapped or dropped rather than forwarded verbatim.
 inline constexpr int kSMSG_UPDATE_OBJECT            = 0x0A9;   // uncompressed object update
 inline constexpr int kSMSG_COMPRESSED_UPDATE_OBJECT = 0x1F6;   // zlib(u32 rawSize + deflate) object update
+inline constexpr int kSMSG_INITIAL_SPELLS          = 0x12A;    // spellbook init: u8 + u16 count + spell/cooldown lists
+inline constexpr int kSMSG_ACTION_BUTTONS          = 0x129;    // action-bar init: 120 x u32, no length prefix
 inline constexpr int kSMSG_LOGIN_VERIFY_WORLD      = 0x236;    // map id + spawn position + orientation
 inline constexpr int kSMSG_MONSTER_MOVE            = 0x0DD;    // spline move; classic body corrupts the x64 actor
 inline constexpr int kSMSG_MONSTER_MOVE_TRANSPORT  = 0x2AE;
@@ -94,6 +96,10 @@ inline constexpr int kQueryEntry3   = 0x143;   // C->S -> CMSG_CREATURE_QUERY (s
 inline constexpr int kSetActiveMover = 0x011;  // C->S -> CMSG_SET_ACTIVE_MOVER (u64 guid the client controls)
 inline constexpr int kSetSelection  = 0x159;   // C->S -> CMSG_SET_SELECTION (u64 guid)
 inline constexpr int kZoneUpdate    = 0x1AB;   // C->S -> CMSG_ZONEUPDATE (u32 zone id)
+inline constexpr int kWorldReadyAck = 0x103;   // C->S world-ready ack (empty body): the client signals it has
+                                               // built its scene and asks for its pawn. It is a client<->proxy
+                                               // handshake, not a server opcode, so it is answered with 0x102
+                                               // (not forwarded to mangos, whose 0x103 is the unrelated SMSG_EMOTE)
 inline constexpr int kQueryByGuid   = 0x4FB;   // C->S -> name/creature/GO query; body is the full 8-byte guid,
                                                // which encodes the template entry (bits [47:24]) the query needs
 inline constexpr int kCharEnumResp  = 0x478;   // S->C <- SMSG_CHAR_ENUM
@@ -104,6 +110,8 @@ inline constexpr int kLoginFailed    = 0x216;  // S->C <- SMSG_CHARACTER_LOGIN_F
 inline constexpr int kAzctProbe      = 0x1A4;  // S->C AZCT probe; the client accepts it only when empty
 inline constexpr int kCompressedUpdate = 0x1FC; // S->C <- SMSG_(COMPRESSED_)UPDATE_OBJECT; the live update handler
                                                 // (the vanilla 0x1F6 slot is an inert stub, so the pawn never spawns)
+inline constexpr int kInitialSpells    = 0x2EB; // S->C <- SMSG_INITIAL_SPELLS; handler builds the spellbook (u8+u16 count+lists)
+inline constexpr int kActionButtons    = 0x4FA; // S->C <- SMSG_ACTION_BUTTONS; handler reads 120 x u32 into the action-bar manager
 inline constexpr int kWorldAccess      = 0x527; // S->C injected before LOGIN_VERIFY_WORLD to lift the world gate
                                                 // (u8 != 0 = granted, u32 = 0 = no countdown); 0x236 alone does not
                                                 // start the map/NPC stream

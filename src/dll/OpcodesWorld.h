@@ -26,10 +26,10 @@ inline constexpr int kWorldAccessFlag = 0x8348;   // world-access restricted fla
 inline constexpr int kWorldAccessTime = 0x834C;   // world-access time at session+0x834C
 
 // opcode -> resolved handler RVA (cross-checked against the world offsets)
-inline constexpr uint32_t kHandler_0xC5 = 0x4956950;   // kMapVerify
-inline constexpr uint32_t kHandler_0x1FC = 0x49532b0;   // kCompressedUpdateHandler
-inline constexpr uint32_t kHandler_0x527 = 0x495cfd0;   // kWorldAccessHandler
-inline constexpr uint32_t kHandler_0x102 = 0x495b7e0;   // kMapPawnHandler
-inline constexpr uint32_t kHandler_0x1EE = 0x4952070;   // kAuthResponseHandler
+inline constexpr uint32_t kHandler_0xC5 = 0x49567d0;   // kMapVerify
+inline constexpr uint32_t kHandler_0x1FC = 0x4953130;   // kCompressedUpdateHandler
+inline constexpr uint32_t kHandler_0x527 = 0x495ce50;   // kWorldAccessHandler
+inline constexpr uint32_t kHandler_0x102 = 0x495b660;   // kMapPawnHandler
+inline constexpr uint32_t kHandler_0x1EE = 0x4951ef0;   // kAuthResponseHandler
 
 } // namespace uoa::wop

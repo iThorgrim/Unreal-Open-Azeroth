@@ -20,6 +20,9 @@ inline int mapClientOpcode(int clientOpcode)
         case op::client::kSetActiveMover: return op::mangos::kCMSG_SET_ACTIVE_MOVER; // u64 guid
         case op::client::kSetSelection:   return op::mangos::kCMSG_SET_SELECTION;     // u64 guid
         case op::client::kZoneUpdate:     return op::mangos::kCMSG_ZONEUPDATE;        // u32 zone id
+        // World-ready ack: a client<->proxy handshake answered locally with the pawn-spawn (0x102), never
+        // forwarded (mangos 0x103 is SMSG_EMOTE, a server opcode it logs as unhandled).
+        case op::client::kWorldReadyAck:  return -1;
         // The client issues three distinct opcodes for a template query, each carrying a u32 entry + u64
         // guid. The real server picks creature/gameobject/item by which template owns the entry; lacking
         // that table here, all resolve to the creature query, so gameobject and item names may be missing.
@@ -50,6 +53,8 @@ inline int mapServerOpcode(int serverOpcode)
 {
     switch (serverOpcode) {
         case op::mangos::kSMSG_COMPRESSED_UPDATE_OBJECT: return op::client::kCompressedUpdate; // 0x1FC
+        case op::mangos::kSMSG_INITIAL_SPELLS:         return op::client::kInitialSpells;  // 0x2EB (spellbook)
+        case op::mangos::kSMSG_ACTION_BUTTONS:         return op::client::kActionButtons;  // 0x4FA (action bars)
         case op::mangos::kSMSG_CHAR_ENUM:              return op::client::kCharEnumResp;   // 0x478
         case op::mangos::kSMSG_CHAR_CREATE:            return op::client::kCharCreateResp; // 0x232
         case op::mangos::kSMSG_CHAR_DELETE:            return op::client::kCharDeleteResp; // 0x233
