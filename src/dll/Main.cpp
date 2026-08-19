@@ -5,12 +5,9 @@
 #include "ConnectHook.h"
 #include "WorldKey.h"
 #include "AzctKeys.h"
-#include "CrashProbe.h"
-#include "SocketProbe.h"
 #include "AuthProbe.h"
 #include "AuthProxy.h"
 #include "WorldProxy.h"
-#include "DiscordPresence.h"
 
 #define WIN32_LEAN_AND_MEAN
 #include <winsock2.h>
@@ -63,13 +60,8 @@ DWORD WINAPI boot(LPVOID) {
     Sleep(200);   // let the listeners bind before hooking connect
     hook::install();
     worldkey::install();
-    crashprobe::install();
     azct::install();          // re-key the AZFNPROTENC canaries so the client validates on OUR keys
-    socketprobe::install();
-    authprobe::install();
-
-    loadDiscordConfig();
-    discord::installAsync();
+    authprobe::install();     // hook the a1 handler: capture the account identity and the client SRP key
 
     log::line("[dll] UnrealOpenAzeroth ready.");
     return 0;

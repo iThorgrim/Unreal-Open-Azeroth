@@ -7,7 +7,6 @@
 #include "Identity.h"
 #include "Srp.h"
 #include "AuthProbe.h"
-#include "SocketProbe.h"
 #include "AzctCanary.h"
 #include "OpCodes.h"
 #include "Log.h"
@@ -274,7 +273,6 @@ static void azrtServe(SOCKET client) {
             log::hex("[auth] ->b1(reply)", b1.data(), int(b1.size()));
             net::sendAll(client, b1.data(), int(b1.size()));
             g_realmReady.store(true);   // auth + realm exchange complete
-            socketprobe::arm();   // catch whatever tears the realmd link down next, with a backtrace
             break;
         }
         case op::azrt::kKeyInstallAck:    // a9: key-install ack; unused, we install no world key

@@ -6,10 +6,6 @@
 
 namespace uoa::off {
 
-inline constexpr uint32_t kReadiness = 0x4129530;   // realm-select readiness predicate (patched -> mov al,1; ret)
-inline constexpr uint32_t kDiscGate = 0x34e4037;   // realmd disconnect gate (jne -> jmp)
-inline constexpr uint32_t kFlagJne = 0x412c3b2;   // a6/a7 flag jne (NOP'd -> force flag==0 path)
-inline constexpr uint32_t kTeardown = 0x4731b50;   // per-frame world-conn teardown (patched -> ret)
 inline constexpr uint32_t kKdf = 0x41262c0;   // AZ-TICKET-v1 KDF (TicketProbe fixes its session fields)
 inline constexpr uint32_t kFinalize = 0x5f6e9c0;   // digest finalize (ProofBridge overwrites its output)
 inline constexpr uint32_t kA3Handler = 0x412c09d;   // opcode-0xA3 handler
